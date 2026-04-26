@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Relay — Twitch → Discord</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar" aria-labelledby="page-title">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5 4h14l-1 9-5 4h-3l-3 3v-3H5V4zm9 3v5m4-5v5" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" fill="none"/>
+            </svg>
+          </div>
+          <div>
+            <p class="eyebrow">Twitch <span aria-hidden="true">→</span> Discord</p>
+            <h1 id="page-title">Relay</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <div class="status-strip" aria-live="polite">
+            <span id="bot-status" data-label="Bot">Starting</span>
+            <span id="eventsub-status" data-label="EventSub">EventSub</span>
+            <span id="notification-count" data-label="Active">0</span>
+            <span id="poll-rate" data-label="Poll">60s</span>
+          </div>
+          <button id="logout" class="icon-button" type="button" title="Log out">Log out</button>
+        </div>
+      </section>
+
+      <nav class="tabs" aria-label="Sections" role="tablist">
+        <button id="tab-routes" class="tab-button is-active" type="button" data-tab="routes" role="tab" aria-selected="true" aria-controls="panel-routes" tabindex="0">Routes</button>
+        <button id="tab-errors" class="tab-button" type="button" data-tab="errors" role="tab" aria-selected="false" aria-controls="panel-errors" tabindex="-1">Errors</button>
+        <button id="tab-history" class="tab-button" type="button" data-tab="history" role="tab" aria-selected="false" aria-controls="panel-history" tabindex="-1">History</button>
+      </nav>
+
+      <section id="panel-routes" class="tab-panel is-active" data-tab-panel="routes" role="tabpanel" aria-labelledby="tab-routes">
+        <section class="toolbar" aria-label="Controls">
+          <label class="field field-small">
+            <span>Poll</span>
+            <input id="poll-interval" type="number" min="30" step="5" value="60">
+          </label>
+          <div class="toolbar-actions">
+            <button id="add-row" class="button button-secondary" type="button">Add route</button>
+            <button id="check-now" class="button button-secondary" type="button">Check now</button>
+            <button id="refresh-data" class="button button-secondary" type="button">Refresh</button>
+            <button id="save-config" class="button" type="button">Save</button>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="notifications-title">
+          <div class="panel-heading">
+            <h2 id="notifications-title">Routes</h2>
+            <p id="save-state" role="status">Ready</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">On</th>
+                  <th scope="col">Twitch</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Channel</th>
+                  <th scope="col">Mention</th>
+                  <th scope="col"></th>
+                </tr>
+              </thead>
+              <tbody id="notification-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="panel-errors" class="tab-panel" data-tab-panel="errors" role="tabpanel" aria-labelledby="tab-errors" hidden>
+        <section class="panel" aria-labelledby="errors-title">
+          <div class="panel-heading">
+            <h2 id="errors-title">Errors</h2>
+            <button id="clear-errors" class="button button-ghost" type="button">Clear</button>
+          </div>
+          <div id="error-list" class="log-list"></div>
+        </section>
+      </section>
+
+      <section id="panel-history" class="tab-panel" data-tab-panel="history" role="tabpanel" aria-labelledby="tab-history" hidden>
+        <section class="panel" aria-labelledby="history-title">
+          <div class="panel-heading">
+            <h2 id="history-title">History</h2>
+          </div>
+          <div id="history-list" class="log-list log-list-wide"></div>
+        </section>
+      </section>
+    </main>
+
+    <template id="notification-row-template">
+      <tr>
+        <td>
+          <label class="switch">
+            <input class="row-enabled" type="checkbox" aria-label="Enable route">
+            <span></span>
+          </label>
+        </td>
+        <td>
+          <input class="row-login" type="text" autocomplete="off" spellcheck="false" placeholder="twitchuser" aria-label="Twitch username">
+        </td>
+        <td class="row-live-status"></td>
+        <td>
+          <select class="row-channel" aria-label="Discord channel"></select>
+          <p class="row-note channel-note"></p>
+        </td>
+        <td>
+          <select class="row-role" aria-label="Role mention"></select>
+        </td>
+        <td>
+          <div class="row-actions">
+            <button class="button button-ghost row-test" type="button">Test</button>
+            <button class="button button-danger row-remove" type="button" aria-label="Remove route">Remove</button>
+          </div>
+        </td>
+      </tr>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

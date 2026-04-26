@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in — Relay</title>
+    <link rel="stylesheet" href="/login.css">
+  </head>
+  <body>
+    <main class="login-shell">
+      <form id="login-form" class="login-panel">
+        <div class="login-head">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5 4h14l-1 9-5 4h-3l-3 3v-3H5V4zm9 3v5m4-5v5" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" fill="none"/>
+            </svg>
+          </div>
+          <p class="eyebrow">Twitch <span aria-hidden="true">→</span> Discord</p>
+          <h1>Relay</h1>
+        </div>
+        <label>
+          <span>Username</span>
+          <input id="username" name="username" autocomplete="username" required>
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">Sign in</button>
+        <p id="login-status" role="status"></p>
+      </form>
+    </main>
+    <script src="/login.js" type="module"></script>
+  </body>
+</html>
