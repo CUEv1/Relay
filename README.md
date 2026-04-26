@@ -102,6 +102,15 @@ npm start
 npm run check
 ```
 
+## Windows Installer
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\installer\install.ps1
+```
+
+See `installer/INSTALL.md` for details.
+
 ## Official References
 
 - Twitch Get Streams: https://dev.twitch.tv/docs/api/reference/#get-streams
