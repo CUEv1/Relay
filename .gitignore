@@ -7,3 +7,4 @@ TOKENS.txt
 *.log
 Start Bot Dashboard.bat
 Start-BotDashboard.ps1
+dist/
