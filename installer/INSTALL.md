@@ -28,3 +28,17 @@ Dashboard URL:
 ```text
 http://127.0.0.1:3000
 ```
+
+## Build Release EXE
+
+From the project root:
+
+```powershell
+.\installer\build-exe.ps1
+```
+
+This creates:
+
+```text
+dist\RelayInstaller-v1.1.exe
+```
