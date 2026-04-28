@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Twitch Watch</title>
+    <style>
+      html, body, main, #twitch-player {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        overflow: hidden;
+        background: #000;
+      }
+
+      .fallback {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: #f4f7fb;
+        font: 14px system-ui, sans-serif;
+      }
+
+      .fallback a {
+        color: #4ee9b5;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="twitch-player"></div>
+      <div id="fallback" class="fallback" hidden></div>
+    </main>
+    <script src="https://embed.twitch.tv/embed/v1.js"></script>
+    <script src="/watch.js"></script>
+  </body>
+</html>

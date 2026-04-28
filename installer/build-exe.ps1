@@ -6,7 +6,7 @@ $buildDir = Join-Path $distDir "installer-build"
 $payloadRoot = Join-Path $buildDir "RelayBot"
 $payloadZip = Join-Path $buildDir "payload.zip"
 $sedPath = Join-Path $buildDir "relay-installer.sed"
-$exePath = Join-Path $distDir "RelayInstaller-v1.1.exe"
+$exePath = Join-Path $distDir "RelayInstaller-v1.2.exe"
 
 function Copy-ProjectItem {
   param([string]$RelativePath)
@@ -27,12 +27,15 @@ New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
 Copy-ProjectItem ".env.example"
 Copy-ProjectItem ".gitignore"
 Copy-ProjectItem "README.md"
+Copy-ProjectItem "Start-BotDashboard-Startup.ps1"
 Copy-ProjectItem "getToken.js"
 Copy-ProjectItem "package-lock.json"
 Copy-ProjectItem "package.json"
 Copy-ProjectItem "public"
 Copy-ProjectItem "src"
 Copy-ProjectItem "installer\INSTALL.md"
+Copy-ProjectItem "installer\disable-startup.ps1"
+Copy-ProjectItem "installer\enable-startup.ps1"
 Copy-ProjectItem "installer\install.ps1"
 
 Compress-Archive -Path $payloadRoot -DestinationPath $payloadZip -Force

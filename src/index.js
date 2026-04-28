@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
+import { spawn } from 'node:child_process';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +31,8 @@ const MAX_ERROR_ITEMS = 100;
 const SESSION_COOKIE = 'dashboard_session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
+const FETCH_RETRY_DELAY_MS = 750;
+const TWITCH_FETCH_ATTEMPTS = 2;
 const TWITCH_LOGIN_CHUNK_SIZE = 100;
 const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
@@ -44,6 +48,7 @@ const twitchUsersByLogin = new Map();
 const eventMessageIds = new Set();
 const eventMessageIdQueue = [];
 const pendingAnnouncements = new Set();
+const openedBrowserStreams = new Set();
 const writeQueues = new Map();
 
 let dashboardConfig = null;
@@ -73,6 +78,7 @@ let eventSubStatus = {
   lastSubscribedAt: null,
   error: null,
 };
+let eventSubTokenWarningLogged = false;
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -176,8 +182,9 @@ async function initializeTwitchAuth() {
   }
 
   twitchTokenExpiresAt = Date.now() + validation.expires_in * 1000;
+  const tokenType = validation.user_id ? 'user' : 'app';
   console.log(
-    `Using provided Twitch access token for client ${env.twitchClientId}; expires in ${validation.expires_in} seconds.`,
+    `Using provided Twitch ${tokenType} access token for client ${env.twitchClientId}; expires in ${validation.expires_in} seconds.`,
   );
 }
 
@@ -214,6 +221,7 @@ function createConfigFromEnv() {
     twitchLogin: login,
     discordChannelId: defaultChannelId,
     discordRoleId: defaultRoleId,
+    openBrowserOnLive: false,
     enabled: Boolean(defaultChannelId),
   }));
 
@@ -227,14 +235,20 @@ function normalizeConfig(input) {
   const source = input && typeof input === 'object' ? input : {};
   const pollIntervalSeconds = parsePollInterval(source.pollIntervalSeconds);
   const seenIds = new Set();
+  const migratedOpenBrowserDefault = source.openBrowserOnLive === true;
   const notifications = Array.isArray(source.notifications)
-    ? source.notifications.map((item) => normalizeNotification(item, seenIds))
+    ? source.notifications.map((item) => (
+      normalizeNotification(item, seenIds, migratedOpenBrowserDefault)
+    ))
     : [];
 
-  return { pollIntervalSeconds, notifications };
+  return {
+    pollIntervalSeconds,
+    notifications,
+  };
 }
 
-function normalizeNotification(item, seenIds = new Set()) {
+function normalizeNotification(item, seenIds = new Set(), openBrowserDefault = false) {
   const source = item && typeof item === 'object' ? item : {};
   let id = sanitizeId(source.id);
 
@@ -249,6 +263,9 @@ function normalizeNotification(item, seenIds = new Set()) {
     twitchLogin: normalizeTwitchLogin(source.twitchLogin),
     discordChannelId: String(source.discordChannelId || '').trim(),
     discordRoleId: String(source.discordRoleId || '').trim(),
+    openBrowserOnLive: source.openBrowserOnLive === undefined
+      ? openBrowserDefault
+      : Boolean(source.openBrowserOnLive),
     enabled: Boolean(source.enabled),
   };
 }
@@ -328,7 +345,7 @@ async function checkStreams(source = 'polling') {
       await announceForNotification(stream, notification, source);
     }
   } catch (error) {
-    await recordError('twitch', 'Live check failed.', { error: error.message });
+    await recordError('twitch', 'Live check failed.', getErrorDetails(error));
   } finally {
     isChecking = false;
   }
@@ -359,13 +376,13 @@ async function getLiveStreams(userLogins) {
       params.append('user_login', login);
     }
 
-    const response = await fetch(`${TWITCH_STREAMS_URL}?${params.toString()}`, {
+    const response = await fetchWithRetry(`${TWITCH_STREAMS_URL}?${params.toString()}`, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${token}`,
         'Client-Id': env.twitchClientId,
       },
-    });
+    }, 'Twitch streams request');
 
     if (!response.ok) {
       const body = await response.text();
@@ -395,13 +412,13 @@ async function getTwitchUsers(userLogins) {
     params.append('login', login);
   }
 
-  const response = await fetch(`${TWITCH_USERS_URL}?${params.toString()}`, {
+  const response = await fetchWithRetry(`${TWITCH_USERS_URL}?${params.toString()}`, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${token}`,
       'Client-Id': env.twitchClientId,
     },
-  });
+  }, 'Twitch users request');
 
   if (!response.ok) {
     const body = await response.text();
@@ -447,12 +464,12 @@ async function getTwitchAccessToken() {
     grant_type: 'client_credentials',
   });
 
-  const response = await fetch(TWITCH_TOKEN_URL, {
+  const response = await fetchWithRetry(TWITCH_TOKEN_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
-  });
+  }, 'Twitch token request');
 
   if (!response.ok) {
     const responseBody = await response.text();
@@ -471,10 +488,10 @@ async function getTwitchAccessToken() {
 }
 
 async function validateTwitchAccessToken(token) {
-  const response = await fetch(TWITCH_VALIDATE_URL, {
+  const response = await fetchWithRetry(TWITCH_VALIDATE_URL, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: { Authorization: `OAuth ${token}` },
-  });
+  }, 'Twitch token validation');
 
   if (!response.ok) {
     const body = await response.text();
@@ -488,6 +505,47 @@ async function validateTwitchAccessToken(token) {
   }
 
   return payload;
+}
+
+async function fetchWithRetry(url, options, label, attempts = TWITCH_FETCH_ATTEMPTS) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < attempts) {
+        await delay(FETCH_RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+
+  throw new Error(`${label} fetch failed: ${describeFetchError(lastError)}`, {
+    cause: lastError,
+  });
+}
+
+function describeFetchError(error) {
+  const parts = [error?.message || 'unknown error'];
+  const cause = error?.cause;
+
+  if (cause?.code) {
+    parts.push(`code=${cause.code}`);
+  }
+
+  if (cause?.message && cause.message !== error?.message) {
+    parts.push(`cause=${cause.message}`);
+  }
+
+  return parts.join(' ');
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function announceForNotification(stream, notification, source) {
@@ -641,6 +699,11 @@ async function announceLive(stream, notification, options = {}) {
     sentAt: new Date().toISOString(),
   });
 
+  await maybeOpenLiveStreamInBrowser(stream, streamUrl, {
+    ...options,
+    openBrowserOnLive: notification.openBrowserOnLive,
+  });
+
   const login = stream.user_login.toLowerCase();
   liveStatus[login] = {
     ...(liveStatus[login] || {}),
@@ -659,6 +722,90 @@ async function announceLive(stream, notification, options = {}) {
   await writeJsonFile(env.statusFile, liveStatus);
 
   console.log(`Announced live stream for ${stream.user_login} (${stream.id}).`);
+}
+
+async function maybeOpenLiveStreamInBrowser(stream, streamUrl, options = {}) {
+  if (!options.openBrowserOnLive) {
+    return;
+  }
+
+  const browserKey = `${stream.user_login.toLowerCase()}:${stream.id}`;
+  if (openedBrowserStreams.has(browserKey)) {
+    return;
+  }
+
+  openedBrowserStreams.add(browserKey);
+  while (openedBrowserStreams.size > 500) {
+    openedBrowserStreams.delete(openedBrowserStreams.values().next().value);
+  }
+
+  try {
+    await openUrlInBrowser(getWatchPageUrl(stream.user_login));
+    console.log(`Opened browser tab for ${stream.user_login} (${stream.id}).`);
+  } catch (error) {
+    openedBrowserStreams.delete(browserKey);
+    await recordError('browser', `Failed to open Twitch channel for ${stream.user_login}.`, {
+      streamUrl,
+      error: error.message,
+    });
+  }
+}
+
+function getWatchPageUrl(login) {
+  return `${getDashboardBaseUrl()}/watch/${encodeURIComponent(normalizeTwitchLogin(login))}`;
+}
+
+function getDashboardBaseUrl() {
+  const host = env.dashboardHost.includes(':') && !env.dashboardHost.startsWith('[')
+    ? `[${env.dashboardHost}]`
+    : env.dashboardHost;
+
+  return `http://${host}:${env.dashboardPort}`;
+}
+
+function openUrlInBrowser(url) {
+  const launch = getBrowserLaunch(url);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(launch.command, launch.args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function getBrowserLaunch(url) {
+  if (process.platform === 'win32') {
+    const chromePath = getWindowsChromePath();
+    if (chromePath) {
+      return { command: chromePath, args: [url] };
+    }
+
+    return { command: 'cmd.exe', args: ['/c', 'start', '', url] };
+  }
+
+  if (process.platform === 'darwin') {
+    return { command: 'open', args: ['-a', 'Google Chrome', url] };
+  }
+
+  return { command: 'google-chrome', args: [url] };
+}
+
+function getWindowsChromePath() {
+  const candidates = [
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Google\\Chrome\\Application\\chrome.exe'),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Google\\Chrome\\Application\\chrome.exe'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Google\\Chrome\\Application\\chrome.exe'),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate)) || '';
 }
 
 async function updateLiveStatusesFromStreams(logins, streams, source) {
@@ -727,9 +874,12 @@ function startEventSub() {
       ...eventSubStatus,
       enabled: false,
       mode: 'polling',
-      error: 'EventSub WebSocket requires a Twitch user access token. Polling remains active.',
+      error: 'EventSub WebSocket requires a Twitch user access token. The configured token is an app token, so polling remains active.',
     };
-    void recordError('eventsub', eventSubStatus.error);
+    if (!eventSubTokenWarningLogged) {
+      eventSubTokenWarningLogged = true;
+      void recordError('eventsub', eventSubStatus.error);
+    }
     return;
   }
 
@@ -931,7 +1081,7 @@ async function createEventSubSubscription(type, broadcasterUserId, login) {
   }
 
   const token = await getEventSubAccessToken();
-  const response = await fetch(EVENTSUB_SUBSCRIPTIONS_URL, {
+  const response = await fetchWithRetry(EVENTSUB_SUBSCRIPTIONS_URL, {
     method: 'POST',
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: {
@@ -950,7 +1100,7 @@ async function createEventSubSubscription(type, broadcasterUserId, login) {
         session_id: eventSubSessionId,
       },
     }),
-  });
+  }, 'EventSub subscription request');
 
   if (!response.ok && response.status !== 409) {
     const body = await response.text();
@@ -1135,6 +1285,12 @@ function startDashboardServer() {
   });
   app.get('/login.js', (request, response) => {
     response.sendFile(path.join(publicDir, 'login.js'));
+  });
+  app.get('/watch/:login', (request, response) => {
+    response.sendFile(path.join(publicDir, 'watch.html'));
+  });
+  app.get('/watch.js', (request, response) => {
+    response.sendFile(path.join(publicDir, 'watch.js'));
   });
 
   app.get('/api/session', (request, response) => {
@@ -1683,6 +1839,16 @@ async function recordError(source, message, details = {}) {
   } catch (error) {
     console.error('Failed to persist error log:', error);
   }
+}
+
+function getErrorDetails(error) {
+  return {
+    error: error?.message || String(error),
+    name: error?.name || null,
+    causeName: error?.cause?.name || null,
+    causeCode: error?.cause?.code || null,
+    causeMessage: error?.cause?.message || null,
+  };
 }
 
 async function readJsonFile(filePath, fallback) {

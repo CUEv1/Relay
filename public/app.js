@@ -8,7 +8,12 @@ const state = {
   lastSavedConfigJson: '',
   secondaryLoadInFlight: false,
   secondaryLoadSequence: 0,
+  autoSaveTimer: null,
+  saveInFlight: false,
+  saveAgain: false,
 };
+
+const AUTO_SAVE_DELAY_MS = 800;
 
 const elements = {
   rows: document.querySelector('#notification-rows'),
@@ -41,6 +46,7 @@ elements.addRow.addEventListener('click', () => {
     twitchLogin: '',
     discordChannelId: '',
     discordRoleId: '',
+    openBrowserOnLive: false,
     enabled: true,
   });
   renderRows();
@@ -48,6 +54,14 @@ elements.addRow.addEventListener('click', () => {
 });
 
 elements.saveConfig.addEventListener('click', saveConfig);
+elements.pollInterval.addEventListener('input', () => {
+  if (!state.config) {
+    return;
+  }
+
+  state.config.pollIntervalSeconds = Number.parseInt(elements.pollInterval.value || '60', 10);
+  updateDirtyState();
+});
 elements.checkNow.addEventListener('click', checkNow);
 elements.refreshData.addEventListener('click', loadDashboard);
 elements.clearErrors.addEventListener('click', clearErrors);
@@ -77,6 +91,7 @@ async function ensureSession() {
 
 async function loadDashboard() {
   try {
+    clearAutoSaveTimer();
     setStatus('Loading dashboard');
     setControlsDisabled(true);
     const [config, channelPayload, rolePayload, status] = await Promise.all([
@@ -144,7 +159,7 @@ function renderRows() {
   if (!state.config || state.config.notifications.length === 0) {
     const emptyRow = document.createElement('tr');
     const emptyCell = document.createElement('td');
-    emptyCell.colSpan = 6;
+    emptyCell.colSpan = 7;
     emptyCell.textContent = 'No notifications configured.';
     emptyCell.className = 'empty-cell';
     emptyRow.append(emptyCell);
@@ -160,6 +175,7 @@ function renderRows() {
     const routeStatus = fragment.querySelector('.row-live-status');
     const channel = fragment.querySelector('.row-channel');
     const role = fragment.querySelector('.row-role');
+    const openBrowser = fragment.querySelector('.row-open-browser');
     const channelNote = fragment.querySelector('.channel-note');
     const test = fragment.querySelector('.row-test');
     const remove = fragment.querySelector('.row-remove');
@@ -170,7 +186,9 @@ function renderRows() {
     login.setAttribute('aria-label', `Twitch username for ${accessibleName}`);
     channel.setAttribute('aria-label', `Discord channel for ${accessibleName}`);
     role.setAttribute('aria-label', `Discord role mention for ${accessibleName}`);
+    openBrowser.setAttribute('aria-label', `Open Twitch channel in browser for ${accessibleName}`);
     enabled.checked = notification.enabled;
+    openBrowser.checked = Boolean(notification.openBrowserOnLive);
     login.value = notification.twitchLogin;
     renderRouteStatus(routeStatus, notification.twitchLogin);
     renderChannelOptions(channel, notification.discordChannelId);
@@ -179,6 +197,11 @@ function renderRows() {
 
     enabled.addEventListener('change', () => {
       notification.enabled = enabled.checked;
+      updateDirtyState();
+    });
+
+    openBrowser.addEventListener('change', () => {
+      notification.openBrowserOnLive = openBrowser.checked;
       updateDirtyState();
     });
 
@@ -208,12 +231,15 @@ function renderRows() {
     });
 
     test.addEventListener('click', async () => {
-      if (isDirty()) {
-        setStatus('Save changes before sending a test alert.');
-        return;
-      }
-
       try {
+        if (isDirty()) {
+          setStatus('Saving changes before test alert');
+          const saved = await saveConfig();
+          if (!saved) {
+            return;
+          }
+        }
+
         setStatus('Sending test alert');
         await apiPost('/api/test-alert', { notificationId: notification.id });
         await loadSecondaryData();
@@ -439,21 +465,47 @@ function renderErrors() {
 
 async function saveConfig() {
   if (!state.config) {
-    return;
+    return false;
   }
+
+  clearAutoSaveTimer();
+
+  if (state.saveInFlight) {
+    state.saveAgain = true;
+    setStatus('Saving changes');
+    return true;
+  }
+
+  state.saveInFlight = true;
 
   try {
     setStatus('Saving changes');
     state.config.pollIntervalSeconds = Number.parseInt(elements.pollInterval.value || '60', 10);
+    const requestJson = serializeConfig(state.config);
     const saved = await apiPut('/api/config', state.config);
-    state.config = saved;
-    state.lastSavedConfigJson = serializeConfig(saved);
-    elements.pollInterval.value = saved.pollIntervalSeconds;
-    renderRows();
+    const savedJson = serializeConfig(saved);
+    const hasLocalChangesSinceRequest = serializeConfig(state.config) !== requestJson;
+
+    state.lastSavedConfigJson = savedJson;
+
+    if (!hasLocalChangesSinceRequest) {
+      state.config = saved;
+      elements.pollInterval.value = saved.pollIntervalSeconds;
+      renderRows();
+    }
+
     await loadSecondaryData();
-    setStatus('Saved');
+    setStatus(hasLocalChangesSinceRequest ? 'Auto-saving changes' : 'Saved');
+    return true;
   } catch (error) {
     setStatus(`Save failed: ${error.message}`);
+    return false;
+  } finally {
+    state.saveInFlight = false;
+    if (state.saveAgain || isDirty()) {
+      state.saveAgain = false;
+      scheduleAutoSave(0);
+    }
   }
 }
 
@@ -607,7 +659,23 @@ function isDirty() {
 
 function updateDirtyState() {
   if (isDirty()) {
-    setStatus('Unsaved changes');
+    setStatus('Auto-saving changes');
+    scheduleAutoSave();
+  }
+}
+
+function scheduleAutoSave(delay = AUTO_SAVE_DELAY_MS) {
+  clearAutoSaveTimer();
+  state.autoSaveTimer = setTimeout(() => {
+    state.autoSaveTimer = null;
+    void saveConfig();
+  }, delay);
+}
+
+function clearAutoSaveTimer() {
+  if (state.autoSaveTimer) {
+    clearTimeout(state.autoSaveTimer);
+    state.autoSaveTimer = null;
   }
 }
 

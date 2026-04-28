@@ -11,6 +11,7 @@ A Node.js Discord bot with a local web dashboard for managing Twitch live notifi
 - Use Twitch EventSub WebSocket for near real-time online/offline events when using a Twitch user access token.
 - Keep polling as a fallback and for periodic status refreshes.
 - Show live/offline status for configured Twitch users.
+- Optionally open selected Twitch channels in Chrome at 1% volume when they go live.
 - Store notification history.
 - Show an error panel for Twitch, Discord, permission, dashboard, and EventSub failures.
 - Send test alerts that match the real live notification format.
@@ -100,6 +101,24 @@ After the first run, use the dashboard. The bot saves live notification settings
 ```powershell
 npm start
 npm run check
+```
+
+## Start Automatically On Windows Login
+
+Run this from the project root:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\installer\enable-startup.ps1
+```
+
+This creates a Windows Scheduled Task named `Twitch Live Discord Bot` that starts the bot when the current Windows user logs in. Startup output is written to `logs\startup.log`.
+
+To remove the startup task:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\installer\disable-startup.ps1
 ```
 
 ## Windows Installer

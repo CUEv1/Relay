@@ -23,6 +23,18 @@ After installing, edit `.env`, then start the bot:
 .\Start-BotDashboard.ps1
 ```
 
+To start the bot automatically when the current Windows user logs in:
+
+```powershell
+.\installer\enable-startup.ps1
+```
+
+To remove the startup task:
+
+```powershell
+.\installer\disable-startup.ps1
+```
+
 Dashboard URL:
 
 ```text
@@ -40,5 +52,5 @@ From the project root:
 This creates:
 
 ```text
-dist\RelayInstaller-v1.1.exe
+dist\RelayInstaller-v1.2.exe
 ```

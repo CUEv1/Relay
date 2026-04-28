@@ -62,6 +62,138 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* ── Animated background ────────────────────────────── */
+.bg-stage {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 90% 60% at 50% -10%, rgba(46, 224, 165, 0.06), transparent 60%),
+    radial-gradient(ellipse 90% 70% at 50% 110%, rgba(111, 123, 255, 0.05), transparent 60%),
+    var(--bg);
+}
+
+.shell { position: relative; z-index: 1; }
+
+/* Soft graph-paper grid that drifts diagonally */
+.bg-grid {
+  position: absolute;
+  inset: -2px;
+  background-image:
+    linear-gradient(to right, rgba(140, 160, 200, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(140, 160, 200, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 40%, transparent 100%);
+  animation: grid-drift 60s linear infinite;
+  will-change: background-position;
+}
+
+@keyframes grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 56px 56px, 56px 56px; }
+}
+
+/* Aurora orbs — large blurred radials drifting through the stage */
+.bg-aura {
+  position: absolute;
+  inset: 0;
+  filter: blur(80px) saturate(120%);
+  opacity: 0.85;
+}
+
+.orb {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  mix-blend-mode: screen;
+  will-change: transform;
+}
+
+.orb-a {
+  width: 46vw; height: 46vw;
+  left: -10vw; top: -12vw;
+  background: radial-gradient(circle, rgba(46, 224, 165, 0.55) 0%, rgba(46, 224, 165, 0.18) 35%, transparent 70%);
+  animation: drift-a 24s ease-in-out infinite;
+}
+
+.orb-b {
+  width: 52vw; height: 52vw;
+  right: -14vw; top: -8vw;
+  background: radial-gradient(circle, rgba(111, 123, 255, 0.50) 0%, rgba(111, 123, 255, 0.16) 35%, transparent 70%);
+  animation: drift-b 30s ease-in-out infinite;
+}
+
+.orb-c {
+  width: 40vw; height: 40vw;
+  left: 18vw; bottom: -12vw;
+  background: radial-gradient(circle, rgba(245, 165, 36, 0.32) 0%, rgba(245, 165, 36, 0.10) 40%, transparent 70%);
+  animation: drift-c 36s ease-in-out infinite;
+}
+
+.orb-d {
+  width: 38vw; height: 38vw;
+  right: -8vw; bottom: -10vw;
+  background: radial-gradient(circle, rgba(46, 224, 165, 0.38) 0%, rgba(111, 123, 255, 0.18) 40%, transparent 70%);
+  animation: drift-d 28s ease-in-out infinite;
+}
+
+@keyframes drift-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33%      { transform: translate3d(8vw, 6vh, 0) scale(1.08); }
+  66%      { transform: translate3d(4vw, 14vh, 0) scale(0.94); }
+}
+
+@keyframes drift-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  40%      { transform: translate3d(-10vw, 8vh, 0) scale(1.10); }
+  75%      { transform: translate3d(-4vw, 18vh, 0) scale(0.92); }
+}
+
+@keyframes drift-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50%      { transform: translate3d(-6vw, -10vh, 0) scale(1.12); }
+}
+
+@keyframes drift-d {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  35%      { transform: translate3d(-12vw, -6vh, 0) scale(0.96); }
+  70%      { transform: translate3d(-6vw, -16vh, 0) scale(1.08); }
+}
+
+/* Slow horizontal scan line — adds a "live signal" feel */
+.bg-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    transparent 48%,
+    rgba(46, 224, 165, 0.05) 50%,
+    transparent 52%,
+    transparent 100%
+  );
+  background-size: 100% 200%;
+  animation: scan 14s linear infinite;
+  opacity: 0.6;
+}
+
+@keyframes scan {
+  from { background-position: 0 -100%; }
+  to   { background-position: 0 200%; }
+}
+
+/* Edge vignette so content stays readable */
+.bg-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 100% 100% at 50% 40%, transparent 40%, rgba(7, 9, 15, 0.55) 85%, rgba(7, 9, 15, 0.85) 100%);
 }
 
 button, input, select { font: inherit; color: inherit; }
@@ -428,10 +560,11 @@ tbody tr:hover { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: 0; }
 
 th:nth-child(1), td:nth-child(1) { width: 6%; }
-th:nth-child(3), td:nth-child(3) { width: 20%; }
-th:nth-child(4), td:nth-child(4) { width: 24%; }
-th:nth-child(5), td:nth-child(5) { width: 22%; }
-th:nth-child(6), td:nth-child(6) { width: 14%; }
+th:nth-child(3), td:nth-child(3) { width: 18%; }
+th:nth-child(4), td:nth-child(4) { width: 22%; }
+th:nth-child(5), td:nth-child(5) { width: 19%; }
+th:nth-child(6), td:nth-child(6) { width: 7%; }
+th:nth-child(7), td:nth-child(7) { width: 13%; }
 
 .row-channel, .row-role {
   min-width: 0;
@@ -711,7 +844,8 @@ dd {
   td:nth-child(3)::before { content: "State"; }
   td:nth-child(4)::before { content: "Channel"; }
   td:nth-child(5)::before { content: "Mention"; }
-  td:nth-child(6)::before { content: "Actions"; }
+  td:nth-child(6)::before { content: "Open"; }
+  td:nth-child(7)::before { content: "Actions"; }
 }
 
 @media (max-width: 760px) {
