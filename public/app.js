@@ -43,7 +43,9 @@ elements.addRow.addEventListener('click', () => {
 
   state.config.notifications.push({
     id: createClientId(),
+    provider: 'twitch',
     twitchLogin: '',
+    youtubeChannelId: '',
     discordChannelId: '',
     discordRoleId: '',
     openBrowserOnLive: false,
@@ -171,7 +173,8 @@ function renderRows() {
     const fragment = elements.rowTemplate.content.cloneNode(true);
     const row = fragment.querySelector('tr');
     const enabled = fragment.querySelector('.row-enabled');
-    const login = fragment.querySelector('.row-login');
+    const provider = fragment.querySelector('.row-provider');
+    const identity = fragment.querySelector('.row-identity');
     const routeStatus = fragment.querySelector('.row-live-status');
     const channel = fragment.querySelector('.row-channel');
     const role = fragment.querySelector('.row-role');
@@ -179,18 +182,22 @@ function renderRows() {
     const channelNote = fragment.querySelector('.channel-note');
     const test = fragment.querySelector('.row-test');
     const remove = fragment.querySelector('.row-remove');
-    const accessibleName = notification.twitchLogin || 'new route';
+    const accessibleName = getNotificationIdentity(notification) || 'new route';
+    const currentProvider = getNotificationProvider(notification);
 
     row.dataset.id = notification.id;
     enabled.setAttribute('aria-label', `Enable notification for ${accessibleName}`);
-    login.setAttribute('aria-label', `Twitch username for ${accessibleName}`);
+    provider.setAttribute('aria-label', `Notification source for ${accessibleName}`);
+    identity.setAttribute('aria-label', `${currentProvider === 'youtube' ? 'YouTube channel URL or ID' : 'Twitch username'} for ${accessibleName}`);
     channel.setAttribute('aria-label', `Discord channel for ${accessibleName}`);
     role.setAttribute('aria-label', `Discord role mention for ${accessibleName}`);
-    openBrowser.setAttribute('aria-label', `Open Twitch channel in browser for ${accessibleName}`);
+    openBrowser.setAttribute('aria-label', `Open notification URL in browser for ${accessibleName}`);
     enabled.checked = notification.enabled;
     openBrowser.checked = Boolean(notification.openBrowserOnLive);
-    login.value = notification.twitchLogin;
-    renderRouteStatus(routeStatus, notification.twitchLogin);
+    provider.value = currentProvider;
+    identity.value = getNotificationIdentity(notification);
+    identity.placeholder = currentProvider === 'youtube' ? 'https://www.youtube.com/@handle' : 'twitchuser';
+    renderRouteStatus(routeStatus, notification);
     renderChannelOptions(channel, notification.discordChannelId);
     renderRoleOptions(role, notification.discordRoleId, findGuildIdForChannel(notification.discordChannelId));
     updateChannelNote(channelNote, notification.discordChannelId);
@@ -205,9 +212,17 @@ function renderRows() {
       updateDirtyState();
     });
 
-    login.addEventListener('input', () => {
-      notification.twitchLogin = login.value;
-      renderRouteStatus(routeStatus, notification.twitchLogin);
+    provider.addEventListener('change', () => {
+      notification.provider = provider.value;
+      identity.value = getNotificationIdentity(notification);
+      identity.placeholder = provider.value === 'youtube' ? 'https://www.youtube.com/@handle' : 'twitchuser';
+      renderRouteStatus(routeStatus, notification);
+      updateDirtyState();
+    });
+
+    identity.addEventListener('input', () => {
+      setNotificationIdentity(notification, identity.value);
+      renderRouteStatus(routeStatus, notification);
       updateDirtyState();
     });
 
@@ -245,6 +260,7 @@ function renderRows() {
         await loadSecondaryData();
         setStatus('Test alert sent');
       } catch (error) {
+        await loadSecondaryData();
         setStatus(`Test failed: ${error.message}`);
       }
     });
@@ -379,26 +395,47 @@ function updateRouteStatuses() {
     const notification = state.config.notifications.find((item) => item.id === row.dataset.id);
     const cell = row.querySelector('.row-live-status');
     if (notification && cell) {
-      renderRouteStatus(cell, notification.twitchLogin);
+      renderRouteStatus(cell, notification);
     }
   }
 }
 
-function renderRouteStatus(cell, login) {
-  const normalizedLogin = normalizeLogin(login);
+function renderRouteStatus(cell, notification) {
+  const provider = getNotificationProvider(notification);
+  const identity = getNotificationIdentity(notification);
 
-  if (!normalizedLogin) {
-    cell.innerHTML = '<div class="route-status route-status-muted">No user set</div>';
+  if (!identity) {
+    cell.innerHTML = `<div class="route-status route-status-muted">No ${provider === 'youtube' ? 'channel' : 'user'} set</div>`;
     return;
   }
 
-  const status = state.liveStatuses.find((item) => item.twitchLogin === normalizedLogin);
+  const statusKey = `${provider}:${identity}`;
+  const status = state.liveStatuses.find((item) => (
+    item.statusKey === statusKey ||
+    (provider === 'twitch' && item.twitchLogin === identity) ||
+    (provider === 'youtube' && item.youtubeChannelId === identity)
+  ));
 
   if (!status) {
     cell.innerHTML = `
       <div class="route-status route-status-muted">
         <strong>Unknown</strong>
         <span>Not checked yet</span>
+      </div>
+    `;
+    return;
+  }
+
+  if (provider === 'youtube') {
+    const label = status.hasLatestVideo ? 'LATEST' : 'NO VIDEOS';
+    const detail = status.hasLatestVideo
+      ? `Published ${formatDate(status.publishedAt || status.startedAt)}`
+      : `Last check ${formatDate(status.lastCheckedAt)}`;
+    cell.innerHTML = `
+      <div class="route-status route-status-youtube">
+        <strong>${label}</strong>
+        <span>${escapeHtml(detail)}</span>
+        <small>${escapeHtml(status.hasLatestVideo ? status.title || 'Untitled video' : status.displayName || identity)}</small>
       </div>
     `;
     return;
@@ -414,7 +451,7 @@ function renderRouteStatus(cell, login) {
     <div class="route-status ${statusClass}">
       <strong>${label}</strong>
       <span>${escapeHtml(detail)}</span>
-      <small>${escapeHtml(status.isLive ? status.title || 'Untitled stream' : status.displayName || normalizedLogin)}</small>
+      <small>${escapeHtml(status.isLive ? status.title || 'Untitled stream' : status.displayName || identity)}</small>
     </div>
   `;
 }
@@ -477,6 +514,7 @@ async function saveConfig() {
   }
 
   state.saveInFlight = true;
+  let savedSuccessfully = false;
 
   try {
     setStatus('Saving changes');
@@ -496,13 +534,14 @@ async function saveConfig() {
 
     await loadSecondaryData();
     setStatus(hasLocalChangesSinceRequest ? 'Auto-saving changes' : 'Saved');
+    savedSuccessfully = true;
     return true;
   } catch (error) {
     setStatus(`Save failed: ${error.message}`);
     return false;
   } finally {
     state.saveInFlight = false;
-    if (state.saveAgain || isDirty()) {
+    if (state.saveAgain || (savedSuccessfully && isDirty())) {
       state.saveAgain = false;
       scheduleAutoSave(0);
     }
@@ -511,7 +550,7 @@ async function saveConfig() {
 
 async function checkNow() {
   try {
-    setStatus('Checking Twitch');
+    setStatus('Checking notifications');
     await apiPost('/api/check-now', {});
     await loadSecondaryData();
     setStatus('Check complete');
@@ -543,6 +582,33 @@ function normalizeLogin(value) {
   return String(value || '').trim().toLowerCase().replace(/^@/, '');
 }
 
+function getNotificationProvider(notification) {
+  return String(notification?.provider || '').trim().toLowerCase() === 'youtube' ? 'youtube' : 'twitch';
+}
+
+function getNotificationIdentity(notification) {
+  if (getNotificationProvider(notification) === 'youtube') {
+    return normalizeYoutubeChannelId(notification.youtubeChannelId);
+  }
+
+  return normalizeLogin(notification.twitchLogin);
+}
+
+function setNotificationIdentity(notification, value) {
+  if (getNotificationProvider(notification) === 'youtube') {
+    notification.youtubeChannelId = normalizeYoutubeChannelId(value);
+    return;
+  }
+
+  notification.twitchLogin = normalizeLogin(value);
+}
+
+function normalizeYoutubeChannelId(value) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/(?:^|\/)(UC[a-zA-Z0-9_-]{22})(?:[/?#]|$)/);
+  return match ? match[1] : raw;
+}
+
 function groupBy(items, key) {
   const groups = new Map();
   for (const item of items) {
@@ -559,6 +625,9 @@ function historyTitle(item) {
   if (item.type === 'test_alert') {
     return `Test alert: ${item.displayName || item.twitchLogin}`;
   }
+  if (item.type === 'youtube_video') {
+    return `YouTube alert: ${item.displayName || item.youtubeChannelId}`;
+  }
   if (item.type === 'stream_offline') {
     return `${item.displayName || item.twitchLogin} went offline`;
   }
@@ -567,7 +636,8 @@ function historyTitle(item) {
 
 function historyDetail(item) {
   if (item.discordChannelName) {
-    return `${item.discordGuildName || 'Discord'} / #${item.discordChannelName} via ${item.source}`;
+    const platform = item.platform ? `${item.platform} ` : '';
+    return `${item.discordGuildName || 'Discord'} / #${item.discordChannelName} via ${platform}${item.source}`;
   }
   return `Source: ${item.source || 'unknown'}`;
 }

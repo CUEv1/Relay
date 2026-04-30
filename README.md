@@ -1,17 +1,17 @@
-# Twitch Live Discord Bot Dashboard
+# Stream Notifications Discord Bot Dashboard
 
-A Node.js Discord bot with a local web dashboard for managing Twitch live notifications.
+A Node.js Discord bot with a local web dashboard for managing Twitch live notifications and YouTube upload notifications.
 
 ## Features
 
-- Route each Twitch live alert to a different Discord channel.
+- Route each Twitch live alert or YouTube upload alert to a different Discord channel.
 - Pick Discord channels grouped by server, with unusable channels hidden or warned.
 - Pick Discord role mentions from a dropdown.
 - Log in to the dashboard with a username and password.
-- Use Twitch EventSub WebSocket for near real-time online/offline events when using a Twitch user access token.
+- Use Twitch EventSub WebSocket for near real-time Twitch online/offline events when using a Twitch user access token.
 - Keep polling as a fallback and for periodic status refreshes.
-- Show live/offline status for configured Twitch users.
-- Optionally open selected Twitch channels in Chrome at 1% volume when they go live.
+- Show live/offline status for configured Twitch users and latest-video status for YouTube channels.
+- Optionally open selected Twitch channels or YouTube videos in Chrome when notifications fire.
 - Store notification history.
 - Show an error panel for Twitch, Discord, permission, dashboard, and EventSub failures.
 - Send test alerts that match the real live notification format.
@@ -47,7 +47,9 @@ Set `TWITCH_ACCESS_TOKEN` if you already have a Twitch user access token. This i
 
 Alternatively, set both `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` from a Twitch application in the Twitch Developer Console. This supports polling, but EventSub WebSocket subscriptions require a user access token.
 
-Twitch users do not need to be set in `.env`. Add and edit them from the dashboard.
+Twitch credentials are only required if you enable Twitch routes. YouTube upload notifications use the channel RSS feed and do not require a YouTube API key.
+
+Twitch users and YouTube channels do not need to be set in `.env`. Add and edit them from the dashboard. YouTube routes accept channel URLs such as `https://www.youtube.com/@handle`, `/channel/UC...` URLs, or a channel ID such as `UC...`; the bot resolves URLs to channel IDs when you save.
 
 ## Dashboard Environment Variables
 
@@ -74,21 +76,22 @@ These are only used when `data/dashboard-config.json` does not exist yet:
 ```env
 DISCORD_CHANNEL_ID=your_discord_channel_id
 TWITCH_USER_LOGINS=shroud,pokimane,twitchdev
+YOUTUBE_CHANNEL_IDS=UC_x5XG1OV2P6uZZ5FSM9Ttw
 DISCORD_ROLE_ID=
-POLL_INTERVAL_SECONDS=60
+POLL_INTERVAL_SECONDS=10
 ```
 
-After the first run, use the dashboard. The bot saves live notification settings to `data/dashboard-config.json`. You can leave `TWITCH_USER_LOGINS` blank and add users from the website instead.
+After the first run, use the dashboard. The bot saves notification settings to `data/dashboard-config.json`. You can leave seed values blank and add routes from the website instead.
 
 ## Files
 
-`src/index.js` runs the Discord bot, Twitch polling, EventSub WebSocket client, dashboard API, session login, and static dashboard server.
+`src/index.js` runs the Discord bot, Twitch polling, YouTube feed polling, EventSub WebSocket client, dashboard API, session login, and static dashboard server.
 
 `public/` contains the dashboard and login page HTML, CSS, and browser JavaScript.
 
 `data/dashboard-config.json` stores notification routes.
 
-`data/live-state.json` stores stream IDs that have already been announced.
+`data/live-state.json` stores stream or video IDs that have already been announced.
 
 `data/live-status.json` stores current live/offline dashboard status.
 
@@ -136,4 +139,5 @@ See `installer/INSTALL.md` for details.
 - Twitch EventSub WebSockets: https://dev.twitch.tv/docs/eventsub/handling-websocket-events
 - Twitch Create EventSub Subscription: https://dev.twitch.tv/docs/api/reference/#create-eventsub-subscription
 - Twitch stream.online and stream.offline: https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/#stream-online
+- YouTube channel feeds: `https://www.youtube.com/feeds/videos.xml?channel_id=CHANNEL_ID`
 - discord.js gateway intents: https://discordjs.guide/popular-topics/intents.html

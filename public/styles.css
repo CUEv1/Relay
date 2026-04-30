@@ -560,6 +560,7 @@ tbody tr:hover { background: var(--surface-2); }
 tbody tr:last-child td { border-bottom: 0; }
 
 th:nth-child(1), td:nth-child(1) { width: 6%; }
+th:nth-child(2), td:nth-child(2) { width: 15%; }
 th:nth-child(3), td:nth-child(3) { width: 18%; }
 th:nth-child(4), td:nth-child(4) { width: 22%; }
 th:nth-child(5), td:nth-child(5) { width: 19%; }
@@ -570,6 +571,11 @@ th:nth-child(7), td:nth-child(7) { width: 13%; }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.source-field {
+  display: grid;
+  gap: 6px;
 }
 
 .empty-cell {
@@ -695,6 +701,9 @@ th:nth-child(7), td:nth-child(7) { width: 13%; }
 }
 
 .route-status-live span { color: var(--text); font-weight: 500; }
+
+.route-status-youtube strong { color: #ff6068; }
+.route-status-youtube span { color: var(--text); font-weight: 500; }
 
 .route-status-offline strong { color: var(--muted-dim); }
 
@@ -840,7 +849,7 @@ dd {
   }
 
   td:nth-child(1)::before { content: "On"; }
-  td:nth-child(2)::before { content: "Twitch"; }
+  td:nth-child(2)::before { content: "Source"; }
   td:nth-child(3)::before { content: "State"; }
   td:nth-child(4)::before { content: "Channel"; }
   td:nth-child(5)::before { content: "Mention"; }
