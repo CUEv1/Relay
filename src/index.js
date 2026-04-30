@@ -1112,7 +1112,6 @@ async function announceLive(stream, notification, options = {}) {
     provider: 'twitch',
     identity: stream.user_login,
     label: `Twitch channel for ${stream.user_login}`,
-    url: getWatchPageUrl(stream.user_login),
     openBrowserOnLive: notification.openBrowserOnLive,
   });
 
@@ -1249,7 +1248,7 @@ async function maybeOpenUrlInBrowser(item, streamUrl, options = {}) {
   }
 
   try {
-    await openUrlInBrowser(options.url || streamUrl);
+    await openUrlInBrowser(streamUrl);
     console.log(`Opened browser tab for ${options.label || streamUrl} (${item.id}).`);
   } catch (error) {
     openedBrowserStreams.delete(browserKey);
@@ -1258,17 +1257,6 @@ async function maybeOpenUrlInBrowser(item, streamUrl, options = {}) {
       error: error.message,
     });
   }
-}
-
-function getWatchPageUrl(login) {
-  return `${getDashboardBaseUrl()}/watch/${encodeURIComponent(normalizeTwitchLogin(login))}`;
-}
-
-function getDashboardBaseUrl() {
-  const host = env.dashboardHost.includes(':') && !env.dashboardHost.startsWith('[')
-    ? `[${env.dashboardHost}]`
-    : env.dashboardHost;
-  return `http://${host}:${env.dashboardPort}`;
 }
 
 function openUrlInBrowser(url) {
@@ -1859,13 +1847,6 @@ function startDashboardServer() {
   app.get('/login.js', (request, response) => {
     response.sendFile(path.join(publicDir, 'login.js'));
   });
-  app.get('/watch/:login', (request, response) => {
-    response.sendFile(path.join(publicDir, 'watch.html'));
-  });
-  app.get('/watch.js', (request, response) => {
-    response.sendFile(path.join(publicDir, 'watch.js'));
-  });
-
   app.get('/api/session', (request, response) => {
     const session = getSession(request);
     response.json({
