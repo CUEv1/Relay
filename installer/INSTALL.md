@@ -52,5 +52,5 @@ From the project root:
 This creates:
 
 ```text
-dist\RelayInstaller-v1.2.exe
+dist\RelayInstaller-v<package-version>.exe
 ```

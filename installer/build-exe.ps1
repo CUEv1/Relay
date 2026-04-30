@@ -6,7 +6,9 @@ $buildDir = Join-Path $distDir "installer-build"
 $payloadRoot = Join-Path $buildDir "RelayBot"
 $payloadZip = Join-Path $buildDir "payload.zip"
 $sedPath = Join-Path $buildDir "relay-installer.sed"
-$exePath = Join-Path $distDir "RelayInstaller-v1.2.exe"
+$package = Get-Content -Path (Join-Path $projectRoot "package.json") -Raw | ConvertFrom-Json
+$version = $package.version
+$exePath = Join-Path $distDir "RelayInstaller-v$version.exe"
 
 function Copy-ProjectItem {
   param([string]$RelativePath)
