@@ -1,6 +1,6 @@
 {
   "name": "stream-notifications-discord-bot",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Discord bot that announces configured Twitch live streams and YouTube uploads.",
   "main": "src/index.js",
   "type": "module",

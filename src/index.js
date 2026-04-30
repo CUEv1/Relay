@@ -14,6 +14,7 @@ import {
   EmbedBuilder,
   GatewayIntentBits,
   PermissionsBitField,
+  SlashCommandBuilder,
 } from 'discord.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,6 +44,8 @@ const SENDABLE_CHANNEL_TYPES = new Set([
   ChannelType.GuildAnnouncement,
   ChannelType.GuildText,
 ]);
+const PURGE_COMMAND_NAME = 'purge';
+const PURGE_MAX_COUNT = 100;
 
 const env = loadEnv();
 const sessions = new Map();
@@ -95,6 +98,7 @@ const client = new Client({
 
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  await registerGuildCommands();
   dashboardConfig = await loadDashboardConfig();
   await ensureTwitchAuthForActiveRoutes();
   liveState = await readJsonFile(env.stateFile, {});
@@ -109,6 +113,20 @@ client.once('ready', async () => {
 
 client.on('error', (error) => {
   void recordError('discord', 'Discord client error.', { error: error.message });
+});
+
+client.on('guildCreate', (guild) => {
+  void registerGuildCommands(guild);
+});
+
+client.on('interactionCreate', (interaction) => {
+  if (!interaction.isChatInputCommand()) {
+    return;
+  }
+
+  if (interaction.commandName === PURGE_COMMAND_NAME) {
+    void handlePurgeCommand(interaction);
+  }
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -204,6 +222,109 @@ async function ensureTwitchAuthForActiveRoutes() {
   }
 
   await initializeTwitchAuth();
+}
+
+async function registerGuildCommands(targetGuild = null) {
+  const commandData = createPurgeCommand().toJSON();
+  const guilds = targetGuild ? [targetGuild] : [...client.guilds.cache.values()];
+
+  for (const guild of guilds) {
+    try {
+      const commands = await guild.commands.fetch();
+      const existing = commands.find((command) => command.name === PURGE_COMMAND_NAME);
+      if (existing) {
+        await existing.edit(commandData);
+      } else {
+        await guild.commands.create(commandData);
+      }
+      console.log(`Registered slash commands for ${guild.name}.`);
+    } catch (error) {
+      await recordError('discord', `Failed to register slash commands for ${guild.name}.`, {
+        guildId: guild.id,
+        error: error.message,
+      });
+    }
+  }
+}
+
+function createPurgeCommand() {
+  return new SlashCommandBuilder()
+    .setName(PURGE_COMMAND_NAME)
+    .setDescription('Delete recent messages from this channel.')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addIntegerOption((option) => option
+      .setName('count')
+      .setDescription('Number of recent messages to delete.')
+      .setMinValue(1)
+      .setMaxValue(PURGE_MAX_COUNT)
+      .setRequired(true));
+}
+
+async function handlePurgeCommand(interaction) {
+  try {
+    if (!interaction.inGuild()) {
+      await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+      return;
+    }
+
+    const channel = interaction.channel;
+    if (
+      !channel ||
+      !channel.isTextBased() ||
+      channel.type === ChannelType.DM ||
+      typeof channel.bulkDelete !== 'function'
+    ) {
+      await interaction.reply({ content: 'Use this command in a server text channel.', ephemeral: true });
+      return;
+    }
+
+    const memberPermissions = interaction.memberPermissions;
+    if (!memberPermissions?.has(PermissionsBitField.Flags.ManageMessages)) {
+      await interaction.reply({
+        content: 'You need Manage Messages permission to use /purge.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const botPermissions = channel.permissionsFor(client.user);
+    if (!botPermissions?.has([
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.ReadMessageHistory,
+      PermissionsBitField.Flags.ManageMessages,
+    ])) {
+      await interaction.reply({
+        content: 'I need View Channel, Read Message History, and Manage Messages permissions here.',
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const count = interaction.options.getInteger('count', true);
+    await interaction.deferReply({ ephemeral: true });
+    const deleted = await channel.bulkDelete(count, true);
+    const skipped = count - deleted.size;
+    const skippedText = skipped > 0
+      ? ` ${skipped} message${skipped === 1 ? ' was' : 's were'} skipped because Discord only bulk-deletes messages newer than 14 days.`
+      : '';
+
+    await interaction.editReply(
+      `Deleted ${deleted.size} message${deleted.size === 1 ? '' : 's'}.${skippedText}`,
+    );
+  } catch (error) {
+    await recordError('discord', 'Failed to run purge command.', getErrorDetails(error));
+    await replyToFailedInteraction(interaction, `Purge failed: ${error?.message || String(error)}`);
+  }
+}
+
+async function replyToFailedInteraction(interaction, message) {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply(message).catch(() => {});
+    return;
+  }
+
+  await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
 }
 
 function resolveProjectPath(value) {

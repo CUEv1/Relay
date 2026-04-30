@@ -15,6 +15,7 @@ A Node.js Discord bot with a local web dashboard for managing Twitch live notifi
 - Store notification history.
 - Show an error panel for Twitch, Discord, permission, dashboard, and EventSub failures.
 - Send test alerts that match the real live notification format.
+- Use `/purge count:<number>` to delete 1-100 recent messages from a channel.
 
 ## Setup
 
@@ -26,7 +27,7 @@ A Node.js Discord bot with a local web dashboard for managing Twitch live notifi
    ```
 
 3. Copy `.env.example` to `.env` and fill in the required values.
-4. Invite the Discord bot to your server with permission to view channels, send messages, embed links, and mention the roles you choose.
+4. Invite the Discord bot to your server with `bot` and `applications.commands` scopes. Give it permission to view channels, send messages, embed links, read message history, manage messages, and mention the roles you choose.
 5. Start the bot and dashboard:
 
    ```powershell
