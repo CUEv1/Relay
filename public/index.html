@@ -7,6 +7,29 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var raw = sessionStorage.getItem('relay:warp');
+          if (!raw) return;
+          sessionStorage.removeItem('relay:warp');
+          var data = JSON.parse(raw);
+          if (!data || Date.now() - data.t > 4000) return;
+          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+          document.body.style.setProperty('--wx', data.x + '%');
+          document.body.style.setProperty('--wy', data.y + '%');
+          document.body.classList.add('is-warp-in');
+          var overlay = document.createElement('div');
+          overlay.className = 'warp-overlay-in';
+          overlay.setAttribute('aria-hidden', 'true');
+          document.body.appendChild(overlay);
+          window.setTimeout(function () {
+            document.body.classList.remove('is-warp-in');
+            overlay.remove();
+          }, 900);
+        } catch (e) {}
+      })();
+    </script>
     <div class="bg-stage" aria-hidden="true">
       <div class="bg-grid"></div>
       <div class="bg-aura">
@@ -59,6 +82,22 @@
             <button id="check-now" class="button button-secondary" type="button">Check now</button>
             <button id="refresh-data" class="button button-secondary" type="button">Refresh</button>
             <button id="save-config" class="button" type="button">Save</button>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="embed-defaults-title">
+          <div class="panel-heading">
+            <h2 id="embed-defaults-title">Embed Defaults</h2>
+          </div>
+          <div class="embed-defaults">
+            <label class="field">
+              <span>Twitch color</span>
+              <input id="twitch-default-color" type="color" value="#9146ff">
+            </label>
+            <label class="field">
+              <span>YouTube color</span>
+              <input id="youtube-default-color" type="color" value="#ff0000">
+            </label>
           </div>
         </section>
 
@@ -121,6 +160,9 @@
               <option value="youtube">YouTube</option>
             </select>
             <input class="row-identity" type="text" autocomplete="off" spellcheck="false" placeholder="twitchuser" aria-label="Source identity">
+            <div class="embed-controls">
+              <input class="row-embed-color" type="color" aria-label="Embed color">
+            </div>
           </div>
         </td>
         <td class="row-live-status"></td>
@@ -139,12 +181,36 @@
         </td>
         <td>
           <div class="row-actions">
+            <button class="button button-ghost row-preview" type="button">Preview</button>
             <button class="button button-ghost row-test" type="button">Test</button>
             <button class="button button-danger row-remove" type="button" aria-label="Remove route">Remove</button>
           </div>
         </td>
       </tr>
     </template>
+
+    <div id="preview-modal" class="modal-backdrop" hidden>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+        <div class="panel-heading">
+          <h2 id="preview-title">Test Alert Preview</h2>
+          <button id="preview-close" class="button button-ghost" type="button">Close</button>
+        </div>
+        <div class="preview-body">
+          <p id="preview-content" class="preview-content"></p>
+          <article id="preview-embed" class="discord-preview-embed">
+              <div class="preview-accent"></div>
+              <div class="preview-main">
+              <img id="preview-embed-thumbnail" alt="">
+              <a id="preview-embed-title" href="#" target="_blank" rel="noreferrer"></a>
+              <p id="preview-embed-description"></p>
+              <div id="preview-embed-fields" class="preview-fields"></div>
+              <img id="preview-embed-image" alt="">
+              <footer id="preview-embed-footer"></footer>
+            </div>
+          </article>
+        </div>
+      </section>
+    </div>
 
     <script src="/app.js" type="module"></script>
   </body>

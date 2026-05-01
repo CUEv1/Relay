@@ -1,3 +1,20 @@
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+document.addEventListener('pointerdown', (event) => {
+  if (reduceMotion) return;
+  const target = event.target.closest('.button, .icon-button');
+  if (!target || target.disabled) return;
+  const rect = target.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height) * 1.1;
+  const wave = document.createElement('span');
+  wave.className = 'ripple-wave';
+  wave.style.width = wave.style.height = `${size}px`;
+  wave.style.left = `${(event.clientX ?? rect.left + rect.width / 2) - rect.left - size / 2}px`;
+  wave.style.top = `${(event.clientY ?? rect.top + rect.height / 2) - rect.top - size / 2}px`;
+  target.appendChild(wave);
+  wave.addEventListener('animationend', () => wave.remove(), { once: true });
+});
+
 const state = {
   config: null,
   channels: [],
@@ -19,6 +36,8 @@ const elements = {
   rows: document.querySelector('#notification-rows'),
   rowTemplate: document.querySelector('#notification-row-template'),
   pollInterval: document.querySelector('#poll-interval'),
+  twitchDefaultColor: document.querySelector('#twitch-default-color'),
+  youtubeDefaultColor: document.querySelector('#youtube-default-color'),
   addRow: document.querySelector('#add-row'),
   checkNow: document.querySelector('#check-now'),
   refreshData: document.querySelector('#refresh-data'),
@@ -34,6 +53,16 @@ const elements = {
   pollRate: document.querySelector('#poll-rate'),
   historyList: document.querySelector('#history-list'),
   errorList: document.querySelector('#error-list'),
+  previewModal: document.querySelector('#preview-modal'),
+  previewClose: document.querySelector('#preview-close'),
+  previewContent: document.querySelector('#preview-content'),
+  previewEmbed: document.querySelector('#preview-embed'),
+  previewEmbedTitle: document.querySelector('#preview-embed-title'),
+  previewEmbedDescription: document.querySelector('#preview-embed-description'),
+  previewEmbedFields: document.querySelector('#preview-embed-fields'),
+  previewEmbedThumbnail: document.querySelector('#preview-embed-thumbnail'),
+  previewEmbedImage: document.querySelector('#preview-embed-image'),
+  previewEmbedFooter: document.querySelector('#preview-embed-footer'),
 };
 
 elements.addRow.addEventListener('click', () => {
@@ -64,10 +93,28 @@ elements.pollInterval.addEventListener('input', () => {
   state.config.pollIntervalSeconds = Number.parseInt(elements.pollInterval.value || '60', 10);
   updateDirtyState();
 });
+for (const [provider, colorInput] of [
+  ['twitch', elements.twitchDefaultColor],
+  ['youtube', elements.youtubeDefaultColor],
+]) {
+  colorInput.addEventListener('input', () => {
+    if (!state.config) return;
+    ensureEmbedDefaults();
+    state.config.embedDefaults[provider].color = normalizeHexColor(colorInput.value);
+    renderRows();
+    updateDirtyState();
+  });
+}
 elements.checkNow.addEventListener('click', checkNow);
 elements.refreshData.addEventListener('click', loadDashboard);
 elements.clearErrors.addEventListener('click', clearErrors);
 elements.logout.addEventListener('click', logout);
+elements.previewClose.addEventListener('click', closePreview);
+elements.previewModal.addEventListener('click', (event) => {
+  if (event.target === elements.previewModal) {
+    closePreview();
+  }
+});
 elements.tabButtons.forEach((button) => {
   button.addEventListener('click', () => activateTab(button.dataset.tab));
   button.addEventListener('keydown', handleTabKeydown);
@@ -104,10 +151,12 @@ async function loadDashboard() {
     ]);
 
     state.config = config;
+    ensureEmbedDefaults();
     state.lastSavedConfigJson = serializeConfig(config);
     state.channels = channelPayload.channels || [];
     state.roles = rolePayload.roles || [];
     elements.pollInterval.value = config.pollIntervalSeconds;
+    renderEmbedDefaults();
     renderRows();
     renderStatus(status);
     await loadSecondaryData();
@@ -175,11 +224,13 @@ function renderRows() {
     const enabled = fragment.querySelector('.row-enabled');
     const provider = fragment.querySelector('.row-provider');
     const identity = fragment.querySelector('.row-identity');
+    const embedColor = fragment.querySelector('.row-embed-color');
     const routeStatus = fragment.querySelector('.row-live-status');
     const channel = fragment.querySelector('.row-channel');
     const role = fragment.querySelector('.row-role');
     const openBrowser = fragment.querySelector('.row-open-browser');
     const channelNote = fragment.querySelector('.channel-note');
+    const preview = fragment.querySelector('.row-preview');
     const test = fragment.querySelector('.row-test');
     const remove = fragment.querySelector('.row-remove');
     const accessibleName = getNotificationIdentity(notification) || 'new route';
@@ -189,6 +240,7 @@ function renderRows() {
     enabled.setAttribute('aria-label', `Enable notification for ${accessibleName}`);
     provider.setAttribute('aria-label', `Notification source for ${accessibleName}`);
     identity.setAttribute('aria-label', `${currentProvider === 'youtube' ? 'YouTube channel URL or ID' : 'Twitch username'} for ${accessibleName}`);
+    embedColor.setAttribute('aria-label', `Embed color for ${accessibleName}`);
     channel.setAttribute('aria-label', `Discord channel for ${accessibleName}`);
     role.setAttribute('aria-label', `Discord role mention for ${accessibleName}`);
     openBrowser.setAttribute('aria-label', `Open notification URL in browser for ${accessibleName}`);
@@ -197,6 +249,7 @@ function renderRows() {
     provider.value = currentProvider;
     identity.value = getNotificationIdentity(notification);
     identity.placeholder = currentProvider === 'youtube' ? 'https://www.youtube.com/@handle' : 'twitchuser';
+    embedColor.value = getEffectiveEmbedColor(notification);
     renderRouteStatus(routeStatus, notification);
     renderChannelOptions(channel, notification.discordChannelId);
     renderRoleOptions(role, notification.discordRoleId, findGuildIdForChannel(notification.discordChannelId));
@@ -216,6 +269,7 @@ function renderRows() {
       notification.provider = provider.value;
       identity.value = getNotificationIdentity(notification);
       identity.placeholder = provider.value === 'youtube' ? 'https://www.youtube.com/@handle' : 'twitchuser';
+      embedColor.value = getEffectiveEmbedColor(notification);
       renderRouteStatus(routeStatus, notification);
       updateDirtyState();
     });
@@ -223,6 +277,11 @@ function renderRows() {
     identity.addEventListener('input', () => {
       setNotificationIdentity(notification, identity.value);
       renderRouteStatus(routeStatus, notification);
+      updateDirtyState();
+    });
+
+    embedColor.addEventListener('input', () => {
+      notification.embedColor = normalizeHexColor(embedColor.value);
       updateDirtyState();
     });
 
@@ -243,6 +302,25 @@ function renderRows() {
     role.addEventListener('change', () => {
       notification.discordRoleId = role.value;
       updateDirtyState();
+    });
+
+    preview.addEventListener('click', async () => {
+      try {
+        if (isDirty()) {
+          setStatus('Saving changes before preview');
+          const saved = await saveConfig();
+          if (!saved) {
+            return;
+          }
+        }
+
+        setStatus('Building preview');
+        const payload = await apiPost('/api/test-alert-preview', { notificationId: notification.id });
+        renderPreview(payload.preview);
+        setStatus('Preview ready');
+      } catch (error) {
+        setStatus(`Preview failed: ${error.message}`);
+      }
     });
 
     test.addEventListener('click', async () => {
@@ -518,6 +596,7 @@ async function saveConfig() {
 
   try {
     setStatus('Saving changes');
+    ensureEmbedDefaults();
     state.config.pollIntervalSeconds = Number.parseInt(elements.pollInterval.value || '60', 10);
     const requestJson = serializeConfig(state.config);
     const saved = await apiPut('/api/config', state.config);
@@ -528,7 +607,9 @@ async function saveConfig() {
 
     if (!hasLocalChangesSinceRequest) {
       state.config = saved;
+      ensureEmbedDefaults();
       elements.pollInterval.value = saved.pollIntervalSeconds;
+      renderEmbedDefaults();
       renderRows();
     }
 
@@ -572,6 +653,78 @@ async function clearErrors() {
 async function logout() {
   await apiPost('/api/logout', {});
   window.location.href = '/login';
+}
+
+function ensureEmbedDefaults() {
+  if (!state.config) {
+    return;
+  }
+
+  state.config.embedDefaults = state.config.embedDefaults && typeof state.config.embedDefaults === 'object'
+    ? state.config.embedDefaults
+    : {};
+  state.config.embedDefaults.twitch = {
+    color: normalizeHexColor(state.config.embedDefaults.twitch?.color || '#9146ff'),
+  };
+  state.config.embedDefaults.youtube = {
+    color: normalizeHexColor(state.config.embedDefaults.youtube?.color || '#ff0000'),
+  };
+}
+
+function renderEmbedDefaults() {
+  ensureEmbedDefaults();
+  elements.twitchDefaultColor.value = state.config.embedDefaults.twitch.color;
+  elements.youtubeDefaultColor.value = state.config.embedDefaults.youtube.color;
+}
+
+function getEffectiveEmbedColor(notification) {
+  const provider = getNotificationProvider(notification);
+  return normalizeHexColor(notification.embedColor || state.config.embedDefaults?.[provider]?.color || '#5865f2');
+}
+
+function normalizeHexColor(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  const color = raw.startsWith('#') ? raw : `#${raw}`;
+  return /^#[0-9a-f]{6}$/.test(color) ? color : '#5865f2';
+}
+
+function renderPreview(preview) {
+  const payload = preview?.payload || {};
+  const embed = payload.embeds?.[0] || {};
+  const color = Number.isFinite(embed.color) ? `#${embed.color.toString(16).padStart(6, '0')}` : '#5865f2';
+  const thumbnailUrl = embed.thumbnail?.url || '';
+  const imageUrl = embed.image?.url || '';
+
+  elements.previewContent.textContent = payload.content || '';
+  elements.previewEmbed.style.setProperty('--preview-color', color);
+  elements.previewEmbedTitle.textContent = embed.title || '';
+  elements.previewEmbedTitle.href = embed.url || '#';
+  elements.previewEmbedDescription.textContent = embed.description || '';
+  elements.previewEmbedFields.replaceChildren();
+
+  for (const field of embed.fields || []) {
+    const node = document.createElement('div');
+    node.className = 'preview-field';
+    node.innerHTML = `
+      <strong>${escapeHtml(field.name || '')}</strong>
+      <span>${escapeHtml(field.value || '')}</span>
+    `;
+    elements.previewEmbedFields.append(node);
+  }
+
+  elements.previewEmbedThumbnail.hidden = !thumbnailUrl;
+  elements.previewEmbedThumbnail.src = thumbnailUrl || '';
+  elements.previewEmbedImage.hidden = !imageUrl;
+  elements.previewEmbedImage.src = imageUrl || '';
+  elements.previewEmbedFooter.textContent = [
+    embed.footer?.text || '',
+    embed.timestamp ? formatDate(embed.timestamp) : '',
+  ].filter(Boolean).join(' - ');
+  elements.previewModal.hidden = false;
+}
+
+function closePreview() {
+  elements.previewModal.hidden = true;
 }
 
 function findGuildIdForChannel(channelId) {

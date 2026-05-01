@@ -38,6 +38,10 @@ const FETCH_RETRY_DELAY_MS = 750;
 const FETCH_ATTEMPTS = 2;
 const TWITCH_LOGIN_CHUNK_SIZE = 100;
 const YOUTUBE_FEED_CONCURRENCY = 4;
+const DEFAULT_EMBED_COLORS = {
+  twitch: '#9146ff',
+  youtube: '#ff0000',
+};
 const LOGIN_ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 8;
 const SENDABLE_CHANNEL_TYPES = new Set([
@@ -51,6 +55,7 @@ const env = loadEnv();
 const sessions = new Map();
 const loginAttempts = new Map();
 const twitchUsersByLogin = new Map();
+const youtubeAvatarsByChannelId = new Map();
 const eventMessageIds = new Set();
 const eventMessageIdQueue = [];
 const pendingAnnouncements = new Set();
@@ -386,6 +391,7 @@ function createConfigFromEnv() {
 
   return {
     pollIntervalSeconds: parsePollInterval(process.env.POLL_INTERVAL_SECONDS || '10'),
+    embedDefaults: createDefaultEmbedDefaults(),
     notifications: [...twitchNotifications, ...youtubeNotifications],
   };
 }
@@ -393,6 +399,7 @@ function createConfigFromEnv() {
 function normalizeConfig(input) {
   const source = input && typeof input === 'object' ? input : {};
   const pollIntervalSeconds = parsePollInterval(source.pollIntervalSeconds);
+  const embedDefaults = normalizeEmbedDefaults(source.embedDefaults);
   const seenIds = new Set();
   const migratedOpenBrowserDefault = source.openBrowserOnLive === true;
   const notifications = Array.isArray(source.notifications)
@@ -403,6 +410,7 @@ function normalizeConfig(input) {
 
   return {
     pollIntervalSeconds,
+    embedDefaults,
     notifications,
   };
 }
@@ -424,11 +432,47 @@ function normalizeNotification(item, seenIds = new Set(), openBrowserDefault = f
     youtubeChannelId: normalizeYoutubeChannelId(source.youtubeChannelId),
     discordChannelId: String(source.discordChannelId || '').trim(),
     discordRoleId: String(source.discordRoleId || '').trim(),
+    embedColor: normalizeOptionalHexColor(source.embedColor),
     openBrowserOnLive: source.openBrowserOnLive === undefined
       ? openBrowserDefault
       : Boolean(source.openBrowserOnLive),
     enabled: Boolean(source.enabled),
   };
+}
+
+function createDefaultEmbedDefaults() {
+  return {
+    twitch: {
+      color: DEFAULT_EMBED_COLORS.twitch,
+    },
+    youtube: {
+      color: DEFAULT_EMBED_COLORS.youtube,
+    },
+  };
+}
+
+function normalizeEmbedDefaults(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const fallback = createDefaultEmbedDefaults();
+
+  return {
+    twitch: {
+      color: normalizeOptionalHexColor(source.twitch?.color) || fallback.twitch.color,
+    },
+    youtube: {
+      color: normalizeOptionalHexColor(source.youtube?.color) || fallback.youtube.color,
+    },
+  };
+}
+
+function normalizeOptionalHexColor(value) {
+  const color = String(value || '').trim().toLowerCase();
+  if (!color) {
+    return '';
+  }
+
+  const normalized = color.startsWith('#') ? color : `#${color}`;
+  return /^#[0-9a-f]{6}$/.test(normalized) ? normalized : color;
 }
 
 function parsePollInterval(value) {
@@ -463,6 +507,32 @@ function isYoutubeChannelId(value) {
 function extractYoutubeChannelId(value) {
   const text = String(value || '');
   return text.match(/(?:^|[/"'=?:,; &])((?:UC)[a-zA-Z0-9_-]{22})(?:[/?#"'=,; &]|$)/);
+}
+
+function normalizeYoutubeLookupInput(value) {
+  const input = String(value || '').trim();
+  if (!input) {
+    return '';
+  }
+
+  const channelId = extractYoutubeChannelId(input)?.[1];
+  if (channelId) {
+    return channelId;
+  }
+
+  if (input.startsWith('@')) {
+    return `/${input}`;
+  }
+
+  if (/^(?:c|user|channel)\/[^/?#]+/i.test(input)) {
+    return `/${input}`;
+  }
+
+  if (/^[a-zA-Z0-9._-]{2,}$/.test(input)) {
+    return `/@${input.replace(/^@/, '')}`;
+  }
+
+  return input;
 }
 
 async function resolveYoutubeChannelsInConfig(config) {
@@ -524,11 +594,12 @@ async function resolveYoutubeChannelInput(input) {
   const html = await response.text();
   return extractYoutubeChannelId(response.url)?.[1] ||
     extractYoutubeChannelId(html)?.[1] ||
+    extractJsonStringValue(html, 'channelId') ||
     '';
 }
 
 function createYoutubeLookupUrl(input) {
-  const value = String(input || '').trim();
+  const value = normalizeYoutubeLookupInput(input);
   if (!value) {
     return '';
   }
@@ -822,10 +893,94 @@ async function getLatestYoutubeVideos(channelIds) {
       return;
     }
 
-    videos.set(channelId, normalizeYoutubeVideo(latestEntry, feed, channelId));
+    const video = normalizeYoutubeVideo(latestEntry, feed, channelId);
+    video.channelAvatarUrl = await getYoutubeChannelAvatarUrl(video.channelId);
+    videos.set(channelId, video);
   });
 
   return videos;
+}
+
+async function getTwitchProfileImageUrl(login) {
+  try {
+    const users = await getTwitchUsers([login]);
+    return users.get(normalizeTwitchLogin(login))?.profile_image_url || '';
+  } catch (error) {
+    await recordError('twitch', `Failed to fetch Twitch profile image for ${login}.`, getErrorDetails(error));
+    return '';
+  }
+}
+
+async function getYoutubeChannelAvatarUrl(channelId) {
+  const normalized = normalizeYoutubeChannelId(channelId);
+  if (!normalized) {
+    return '';
+  }
+
+  if (youtubeAvatarsByChannelId.has(normalized)) {
+    return youtubeAvatarsByChannelId.get(normalized);
+  }
+
+  try {
+    const response = await fetchWithRetry(`https://www.youtube.com/channel/${encodeURIComponent(normalized)}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 DiscordBot YouTube avatar resolver',
+      },
+    }, 'YouTube channel avatar request');
+
+    if (!response.ok) {
+      youtubeAvatarsByChannelId.set(normalized, '');
+      return '';
+    }
+
+    const html = await response.text();
+    const avatarUrl = extractMetaContent(html, 'og:image') ||
+      extractJsonStringValue(html, 'avatar') ||
+      '';
+    youtubeAvatarsByChannelId.set(normalized, avatarUrl);
+    return avatarUrl;
+  } catch (error) {
+    youtubeAvatarsByChannelId.set(normalized, '');
+    await recordError('youtube', `Failed to fetch YouTube avatar for ${normalized}.`, getErrorDetails(error));
+    return '';
+  }
+}
+
+function extractMetaContent(html, property) {
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(html || '').match(
+    new RegExp(`<meta[^>]+property=["']${escapedProperty}["'][^>]+content=["']([^"']+)["']`, 'i'),
+  ) || String(html || '').match(
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escapedProperty}["']`, 'i'),
+  );
+  return match ? decodeHtmlEntities(match[1]) : '';
+}
+
+function extractJsonStringValue(html, key) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(html || '').match(
+    new RegExp(`"${escapedKey}"\\s*:\\s*\\{[^{}]*"url"\\s*:\\s*"([^"]+)"`, 'i'),
+  );
+  return match ? decodeJsonString(match[1]) : '';
+}
+
+function decodeJsonString(value) {
+  try {
+    return JSON.parse(`"${value}"`);
+  } catch {
+    return value;
+  }
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replaceAll('&amp;', '&')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>');
 }
 
 async function mapWithConcurrency(items, concurrency, worker) {
@@ -1170,13 +1325,7 @@ function getStatusKey(provider, identity) {
   return `${provider}:${identity}`;
 }
 
-async function announceLive(stream, notification, options = {}) {
-  const channel = await client.channels.fetch(notification.discordChannelId);
-
-  if (!channel || !channel.isTextBased() || channel.type === ChannelType.DM) {
-    throw new Error(`Discord channel ${notification.discordChannelId} is not a server text channel.`);
-  }
-
+async function createTwitchAlertPayload(stream, notification) {
   const streamUrl = `https://www.twitch.tv/${stream.user_login}`;
   const thumbnailUrl = stream.thumbnail_url
     ?.replace('{width}', '1280')
@@ -1184,9 +1333,10 @@ async function announceLive(stream, notification, options = {}) {
   const cacheBustedThumbnail = thumbnailUrl
     ? `${thumbnailUrl}?t=${encodeURIComponent(stream.started_at || Date.now())}`
     : null;
+  const profileImageUrl = await getTwitchProfileImageUrl(stream.user_login);
 
   const embed = new EmbedBuilder()
-    .setColor(0x9146ff)
+    .setColor(getEmbedColor(notification, 'twitch'))
     .setTitle(`${stream.user_name} is live on Twitch`)
     .setURL(streamUrl)
     .setDescription(stream.title || 'Untitled stream')
@@ -1197,21 +1347,109 @@ async function announceLive(stream, notification, options = {}) {
     .setTimestamp(new Date(stream.started_at || Date.now()))
     .setFooter({ text: 'Twitch live alert' });
 
+  if (profileImageUrl) {
+    embed.setThumbnail(profileImageUrl);
+  }
+
   if (cacheBustedThumbnail) {
     embed.setImage(cacheBustedThumbnail);
   }
 
-  const content = notification.discordRoleId
-    ? `<@&${notification.discordRoleId}> ${stream.user_name} is live: ${streamUrl}`
-    : `${stream.user_name} is live: ${streamUrl}`;
-
-  await channel.send({
-    content,
+  return {
+    content: notification.discordRoleId
+      ? `<@&${notification.discordRoleId}> ${stream.user_name} is live: ${streamUrl}`
+      : `${stream.user_name} is live: ${streamUrl}`,
     embeds: [embed],
     allowedMentions: notification.discordRoleId
       ? { roles: [notification.discordRoleId] }
       : { parse: [] },
-  });
+  };
+}
+
+async function createYoutubeAlertPayload(video, notification) {
+  const publishedAt = parseDateOrNow(video.publishedAt);
+  const profileImageUrl = video.channelAvatarUrl ||
+    await getYoutubeChannelAvatarUrl(video.channelId);
+  const embed = new EmbedBuilder()
+    .setColor(getEmbedColor(notification, 'youtube'))
+    .setTitle(`${video.channelTitle} posted on YouTube`)
+    .setURL(video.videoUrl)
+    .setDescription(video.title || 'Untitled video')
+    .addFields({ name: 'Published', value: formatDiscordTimestamp(publishedAt), inline: true })
+    .setTimestamp(publishedAt)
+    .setFooter({ text: 'YouTube notification' });
+
+  if (profileImageUrl) {
+    embed.setThumbnail(profileImageUrl);
+  }
+
+  if (video.thumbnailUrl) {
+    embed.setImage(video.thumbnailUrl);
+  }
+
+  return {
+    content: notification.discordRoleId
+      ? `<@&${notification.discordRoleId}> ${video.channelTitle} posted: ${video.videoUrl}`
+      : `${video.channelTitle} posted: ${video.videoUrl}`,
+    embeds: [embed],
+    allowedMentions: notification.discordRoleId
+      ? { roles: [notification.discordRoleId] }
+      : { parse: [] },
+  };
+}
+
+function getEmbedColor(notification, provider) {
+  const notificationColor = normalizeOptionalHexColor(notification.embedColor);
+  const defaultColor = normalizeOptionalHexColor(dashboardConfig?.embedDefaults?.[provider]?.color);
+  const configured = (isValidHexColor(notificationColor) ? notificationColor : '') ||
+    (isValidHexColor(defaultColor) ? defaultColor : '') ||
+    DEFAULT_EMBED_COLORS[provider];
+  return Number.parseInt(configured.replace('#', ''), 16);
+}
+
+function serializeAlertPayload(payload) {
+  return {
+    content: payload.content,
+    embeds: payload.embeds.map((embed) => (
+      typeof embed.toJSON === 'function' ? embed.toJSON() : embed
+    )),
+    allowedMentions: payload.allowedMentions,
+  };
+}
+
+function scheduleTestAlertDeletion(message, options = {}) {
+  if (!options.test) {
+    return;
+  }
+
+  const deleteAfterMs = Number.parseInt(options.deleteAfterMs || 0, 10);
+  if (!Number.isFinite(deleteAfterMs) || deleteAfterMs <= 0) {
+    return;
+  }
+
+  setTimeout(() => {
+    message.delete().catch((error) => {
+      void recordError('discord', 'Failed to auto-delete test alert.', {
+        messageId: message.id,
+        channelId: message.channelId,
+        error: error.message,
+      });
+    });
+  }, deleteAfterMs);
+}
+
+async function announceLive(stream, notification, options = {}) {
+  const channel = await client.channels.fetch(notification.discordChannelId);
+
+  if (!channel || !channel.isTextBased() || channel.type === ChannelType.DM) {
+    throw new Error(`Discord channel ${notification.discordChannelId} is not a server text channel.`);
+  }
+
+  const streamUrl = `https://www.twitch.tv/${stream.user_login}`;
+  const payload = await createTwitchAlertPayload(stream, notification);
+
+  const message = await channel.send(payload);
+  scheduleTestAlertDeletion(message, options);
 
   await appendHistory({
     type: options.test ? 'test_alert' : 'live_alert',
@@ -1266,31 +1504,10 @@ async function announceYoutubeVideo(video, notification, options = {}) {
     throw new Error(`Discord channel ${notification.discordChannelId} is not a server text channel.`);
   }
 
-  const publishedAt = parseDateOrNow(video.publishedAt);
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle(`${video.channelTitle} posted on YouTube`)
-    .setURL(video.videoUrl)
-    .setDescription(video.title || 'Untitled video')
-    .addFields({ name: 'Published', value: formatDiscordTimestamp(publishedAt), inline: true })
-    .setTimestamp(publishedAt)
-    .setFooter({ text: 'YouTube notification' });
+  const payload = await createYoutubeAlertPayload(video, notification);
 
-  if (video.thumbnailUrl) {
-    embed.setImage(video.thumbnailUrl);
-  }
-
-  const content = notification.discordRoleId
-    ? `<@&${notification.discordRoleId}> ${video.channelTitle} posted: ${video.videoUrl}`
-    : `${video.channelTitle} posted: ${video.videoUrl}`;
-
-  await channel.send({
-    content,
-    embeds: [embed],
-    allowedMentions: notification.discordRoleId
-      ? { roles: [notification.discordRoleId] }
-      : { parse: [] },
-  });
+  const message = await channel.send(payload);
+  scheduleTestAlertDeletion(message, options);
 
   await appendHistory({
     type: options.test ? 'test_alert' : 'youtube_video',
@@ -2118,7 +2335,9 @@ function startDashboardServer() {
         return;
       }
 
-      await sendTestAlert(notification);
+      await sendTestAlert(notification, {
+        deleteAfterMs: 15_000,
+      });
       response.json({ ok: true });
     } catch (error) {
       const details = {
@@ -2139,6 +2358,30 @@ function startDashboardServer() {
       await recordError('dashboard', 'Failed to send test alert.', details);
       response.status(500).json({
         errors: [`Failed to send test alert: ${error?.message || String(error)}`],
+      });
+    }
+  });
+
+  app.post('/api/test-alert-preview', async (request, response) => {
+    try {
+      const notification = dashboardConfig.notifications.find(
+        (item) => item.id === request.body?.notificationId,
+      );
+
+      if (!notification) {
+        response.status(404).json({ errors: ['Notification was not found.'] });
+        return;
+      }
+
+      response.json({ preview: await createTestAlertPreview(notification) });
+    } catch (error) {
+      const details = {
+        ...getErrorDetails(error),
+        notificationId: request.body?.notificationId || null,
+      };
+      await recordError('dashboard', 'Failed to build test alert preview.', details);
+      response.status(500).json({
+        errors: [`Failed to build test alert preview: ${error?.message || String(error)}`],
       });
     }
   });
@@ -2310,6 +2553,13 @@ async function validateConfig(config) {
     errors.push(`Polling must be at least ${MIN_POLL_INTERVAL_SECONDS} seconds.`);
   }
 
+  for (const provider of ['twitch', 'youtube']) {
+    const defaults = config.embedDefaults?.[provider] || {};
+    if (defaults.color && !isValidHexColor(defaults.color)) {
+      errors.push(`${provider} default embed color must be a 6-digit hex color.`);
+    }
+  }
+
   for (const notification of config.notifications) {
     const provider = getNotificationProvider(notification);
     const label = getNotificationLabel(notification);
@@ -2328,6 +2578,10 @@ async function validateConfig(config) {
 
     if (provider === 'youtube' && notification.youtubeChannelId && !isYoutubeChannelId(notification.youtubeChannelId)) {
       errors.push(`${notification.youtubeChannelId} is not a valid YouTube channel URL or channel ID.`);
+    }
+
+    if (notification.embedColor && !isValidHexColor(notification.embedColor)) {
+      errors.push(`${label} has an invalid embed color.`);
     }
 
     if (!notification.discordChannelId) {
@@ -2374,6 +2628,10 @@ async function validateConfig(config) {
   }
 
   return [...new Set(errors)];
+}
+
+function isValidHexColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || '').trim());
 }
 
 function isDiscordSnowflake(value) {
@@ -2526,21 +2784,51 @@ function getDashboardLiveStatuses() {
     .sort((a, b) => (a.statusKey || '').localeCompare(b.statusKey || ''));
 }
 
-async function sendTestAlert(notification) {
+async function sendTestAlert(notification, options = {}) {
+  const item = await createTestAlertItem(notification);
+
+  if (isYoutubeNotification(notification)) {
+    await announceYoutubeVideo(item, notification, {
+      source: 'dashboard',
+      test: true,
+      deleteAfterMs: options.deleteAfterMs,
+    });
+    return;
+  }
+
+  await announceLive(item, notification, {
+    source: 'dashboard',
+    test: true,
+    deleteAfterMs: options.deleteAfterMs,
+  });
+}
+
+async function createTestAlertPreview(notification) {
+  const item = await createTestAlertItem(notification);
+  const payload = isYoutubeNotification(notification)
+    ? await createYoutubeAlertPayload(item, notification)
+    : await createTwitchAlertPayload(item, notification);
+
+  return {
+    provider: getNotificationProvider(notification),
+    identity: getNotificationIdentity(notification),
+    payload: serializeAlertPayload(payload),
+  };
+}
+
+async function createTestAlertItem(notification) {
   if (isYoutubeNotification(notification)) {
     const channelId = normalizeYoutubeChannelId(notification.youtubeChannelId);
-    let video = null;
 
     if (channelId) {
       const latestVideos = await getLatestYoutubeVideos([channelId]);
-      video = latestVideos.get(channelId);
+      const video = latestVideos.get(channelId);
+      if (video) {
+        return video;
+      }
     }
 
-    await announceYoutubeVideo(video || createYoutubeTestVideo(channelId), notification, {
-      source: 'dashboard',
-      test: true,
-    });
-    return;
+    return createYoutubeTestVideo(channelId);
   }
 
   const login = notification.twitchLogin || 'twitchuser';
@@ -2550,7 +2838,7 @@ async function sendTestAlert(notification) {
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join('_') || login;
 
-  await announceLive({
+  return {
     id: `dashboard-test-${Date.now()}`,
     user_login: login,
     user_name: displayName,
@@ -2559,7 +2847,7 @@ async function sendTestAlert(notification) {
     viewer_count: 128,
     started_at: new Date().toISOString(),
     thumbnail_url: 'https://static-cdn.jtvnw.net/previews-ttv/live_user_twitch-{width}x{height}.jpg',
-  }, notification, { source: 'dashboard', test: true });
+  };
 }
 
 function createYoutubeTestVideo(channelId) {
