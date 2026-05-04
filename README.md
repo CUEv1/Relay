@@ -11,7 +11,7 @@ A Node.js Discord bot with a local web dashboard for managing Twitch live notifi
 - Use Twitch EventSub WebSocket for near real-time Twitch online/offline events when using a Twitch user access token.
 - Keep polling as a fallback and for periodic status refreshes.
 - Show live/offline status for configured Twitch users and latest-video status for YouTube channels.
-- Optionally open selected Twitch channels or YouTube videos in Chrome when notifications fire.
+- Optionally open selected Twitch channels or YouTube videos in Chrome when notifications fire, with new Twitch alerts opened in the background when another Twitch tab is active.
 - Store notification history.
 - Show an error panel for Twitch, Discord, permission, dashboard, and EventSub failures.
 - Send test alerts that match the real live notification format.
@@ -65,6 +65,10 @@ Twitch users and YouTube channels do not need to be set in `.env`. Add and edit 
 `SESSION_SECRET` signs dashboard session cookies. Use a long random value.
 
 `EVENTSUB_ENABLED` defaults to `true`. Set it to `false` to use polling only.
+
+`BROWSER_REMOTE_DEBUGGING_PORT` defaults to `9222`. Set it to `0` to disable Chrome background-tab control for Twitch browser opens.
+
+If Chrome was already running without remote debugging, restart Chrome once after enabling browser opens so the bot can create background tabs.
 
 If `DASHBOARD_HOST` is changed away from `127.0.0.1`, keep `DASHBOARD_PASSWORD` set. The app refuses to start on a non-local dashboard host without a password.
 

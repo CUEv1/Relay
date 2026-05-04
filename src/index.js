@@ -36,6 +36,11 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 15_000;
 const FETCH_RETRY_DELAY_MS = 750;
 const FETCH_ATTEMPTS = 2;
+const BROWSER_REMOTE_DEBUGGING_HOST = '127.0.0.1';
+const BROWSER_REMOTE_DEBUGGING_PORT = parseBrowserRemoteDebuggingPort(
+  process.env.BROWSER_REMOTE_DEBUGGING_PORT || '9222',
+);
+const BROWSER_REMOTE_DEBUGGING_TIMEOUT_MS = 1_000;
 const TWITCH_LOGIN_CHUNK_SIZE = 100;
 const YOUTUBE_FEED_CONCURRENCY = 4;
 const DEFAULT_EMBED_COLORS = {
@@ -209,7 +214,7 @@ async function initializeTwitchAuth() {
   }
 
   twitchTokenExpiresAt = Date.now() + validation.expires_in * 1000;
-  const tokenType = validation.user_id ? 'user' : 'app';
+  const tokenType = hasTwitchUserTokenInfo(validation) ? 'user' : 'app';
   console.log(
     `Using provided Twitch ${tokenType} access token for client ${env.twitchClientId}; expires in ${validation.expires_in} seconds.`,
   );
@@ -1067,10 +1072,21 @@ function chunkArray(items, size) {
   return chunks;
 }
 
+function hasTwitchUserTokenInfo(tokenInfo) {
+  return Boolean(tokenInfo?.user_id || tokenInfo?.login);
+}
+
 async function getTwitchAccessToken() {
   const now = Date.now();
   if (twitchToken && now < twitchTokenExpiresAt - 60_000) {
     return twitchToken;
+  }
+
+  if (env.twitchAccessToken) {
+    if (hasTwitchUserTokenInfo(twitchTokenInfo)) {
+      stopEventSub('EventSub user access token expired. Polling requires a refreshed Twitch access token.');
+    }
+    throw new Error('Configured TWITCH_ACCESS_TOKEN is expired or unavailable. Refresh TWITCH_ACCESS_TOKEN in .env, or remove it to use TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET.');
   }
 
   if (!env.twitchClientId || !env.twitchClientSecret) {
@@ -1099,7 +1115,7 @@ async function getTwitchAccessToken() {
 
   const payload = await response.json();
   twitchToken = payload.access_token;
-  if (twitchTokenInfo?.user_id) {
+  if (hasTwitchUserTokenInfo(twitchTokenInfo)) {
     stopEventSub('EventSub user token expired. Polling remains active.');
   }
   twitchTokenInfo = null;
@@ -1586,8 +1602,9 @@ async function maybeOpenUrlInBrowser(item, streamUrl, options = {}) {
   }
 
   try {
-    await openUrlInBrowser(streamUrl);
-    console.log(`Opened browser tab for ${options.label || streamUrl} (${item.id}).`);
+    const result = await openUrlInBrowser(streamUrl, options);
+    const placement = result.openedInBackground ? 'background browser tab' : 'browser tab';
+    console.log(`Opened ${placement} for ${options.label || streamUrl} (${item.id}).`);
   } catch (error) {
     openedBrowserStreams.delete(browserKey);
     await recordError('browser', `Failed to open ${options.label || 'notification URL'}.`, {
@@ -1597,10 +1614,18 @@ async function maybeOpenUrlInBrowser(item, streamUrl, options = {}) {
   }
 }
 
-function openUrlInBrowser(url) {
+async function openUrlInBrowser(url, options = {}) {
+  if (options.provider === 'twitch' && isTwitchUrl(url)) {
+    const openedInBackground = await tryOpenTwitchUrlInBackgroundChromeTab(url);
+
+    if (openedInBackground) {
+      return { openedInBackground: true };
+    }
+  }
+
   const launch = getBrowserLaunch(url);
 
-  return new Promise((resolve, reject) => {
+  await new Promise((resolve, reject) => {
     const child = spawn(launch.command, launch.args, {
       detached: true,
       stdio: 'ignore',
@@ -1613,23 +1638,42 @@ function openUrlInBrowser(url) {
       resolve();
     });
   });
+
+  return { openedInBackground: false };
 }
 
 function getBrowserLaunch(url) {
   if (process.platform === 'win32') {
     const chromePath = getWindowsChromePath();
     if (chromePath) {
-      return { command: chromePath, args: [url] };
+      return { command: chromePath, args: getChromeLaunchArgs(url) };
     }
 
     return { command: 'cmd.exe', args: ['/c', 'start', '', url] };
   }
 
   if (process.platform === 'darwin') {
-    return { command: 'open', args: ['-a', 'Google Chrome', url] };
+    return { command: 'open', args: getMacChromeLaunchArgs(url) };
   }
 
-  return { command: 'google-chrome', args: [url] };
+  return { command: 'google-chrome', args: getChromeLaunchArgs(url) };
+}
+
+function getChromeLaunchArgs(url) {
+  return [...getChromeRemoteDebuggingArgs(), url];
+}
+
+function getMacChromeLaunchArgs(url) {
+  const remoteDebuggingArgs = getChromeRemoteDebuggingArgs();
+  return remoteDebuggingArgs.length > 0
+    ? ['-a', 'Google Chrome', url, '--args', ...remoteDebuggingArgs]
+    : ['-a', 'Google Chrome', url];
+}
+
+function getChromeRemoteDebuggingArgs() {
+  return BROWSER_REMOTE_DEBUGGING_PORT > 0
+    ? [`--remote-debugging-port=${BROWSER_REMOTE_DEBUGGING_PORT}`]
+    : [];
 }
 
 function getWindowsChromePath() {
@@ -1640,6 +1684,159 @@ function getWindowsChromePath() {
   ].filter(Boolean);
 
   return candidates.find((candidate) => existsSync(candidate)) || '';
+}
+
+function parseBrowserRemoteDebuggingPort(value) {
+  const port = Number.parseInt(value, 10);
+
+  if (!Number.isFinite(port) || port < 0 || port > 65535) {
+    return 9222;
+  }
+
+  return port;
+}
+
+async function tryOpenTwitchUrlInBackgroundChromeTab(url) {
+  if (BROWSER_REMOTE_DEBUGGING_PORT <= 0) {
+    return false;
+  }
+
+  const tabs = await getChromeDebuggingTabs();
+
+  if (!await hasActiveTwitchChromeTab(tabs)) {
+    return false;
+  }
+
+  const webSocketDebuggerUrl = await getChromeBrowserWebSocketUrl();
+
+  if (!webSocketDebuggerUrl) {
+    return false;
+  }
+
+  try {
+    await sendChromeDebuggingCommand(webSocketDebuggerUrl, 'Target.createTarget', {
+      url,
+      background: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasActiveTwitchChromeTab(tabs) {
+  for (const tab of tabs) {
+    if (isTwitchUrl(tab.url) && await isChromeTabVisible(tab)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function isChromeTabVisible(tab) {
+  if (!tab.webSocketDebuggerUrl) {
+    return false;
+  }
+
+  try {
+    const result = await sendChromeDebuggingCommand(tab.webSocketDebuggerUrl, 'Runtime.evaluate', {
+      expression: 'document.visibilityState',
+      returnByValue: true,
+    });
+
+    return result?.result?.value === 'visible';
+  } catch {
+    return false;
+  }
+}
+
+async function getChromeDebuggingTabs() {
+  const payload = await fetchChromeDebuggingJson('/json/list');
+  return Array.isArray(payload)
+    ? payload.filter((tab) => tab?.type === 'page' && typeof tab.url === 'string')
+    : [];
+}
+
+async function getChromeBrowserWebSocketUrl() {
+  const payload = await fetchChromeDebuggingJson('/json/version');
+  return typeof payload?.webSocketDebuggerUrl === 'string'
+    ? payload.webSocketDebuggerUrl
+    : '';
+}
+
+async function fetchChromeDebuggingJson(pathname) {
+  try {
+    const response = await fetch(
+      `http://${BROWSER_REMOTE_DEBUGGING_HOST}:${BROWSER_REMOTE_DEBUGGING_PORT}${pathname}`,
+      { signal: AbortSignal.timeout(BROWSER_REMOTE_DEBUGGING_TIMEOUT_MS) },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function sendChromeDebuggingCommand(webSocketDebuggerUrl, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(webSocketDebuggerUrl);
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error(`Timed out while sending Chrome command ${method}.`));
+    }, BROWSER_REMOTE_DEBUGGING_TIMEOUT_MS);
+
+    socket.once('open', () => {
+      socket.send(JSON.stringify({
+        id: 1,
+        method,
+        params,
+      }));
+    });
+
+    socket.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+
+    socket.on('message', (data) => {
+      let payload = null;
+
+      try {
+        payload = JSON.parse(String(data));
+      } catch {
+        return;
+      }
+
+      if (payload.id !== 1) {
+        return;
+      }
+
+      clearTimeout(timeout);
+      socket.close();
+
+      if (payload.error) {
+        reject(new Error(payload.error.message || `Chrome rejected command ${method}.`));
+        return;
+      }
+
+      resolve(payload.result);
+    });
+  });
+}
+
+function isTwitchUrl(value) {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return hostname === 'twitch.tv' || hostname.endsWith('.twitch.tv');
+  } catch {
+    return false;
+  }
 }
 
 async function updateLiveStatusesFromStreams(logins, streams, source) {
@@ -1762,7 +1959,7 @@ function startEventSub() {
     return;
   }
 
-  if (!twitchTokenInfo?.user_id) {
+  if (!hasTwitchUserTokenInfo(twitchTokenInfo)) {
     eventSubStatus = {
       ...eventSubStatus,
       enabled: false,
@@ -1928,7 +2125,7 @@ function pruneLiveStateForConfig(config) {
 }
 
 async function refreshEventSubSubscriptions() {
-  if (!eventSubSessionId || !twitchTokenInfo?.user_id) {
+  if (!eventSubSessionId || !hasTwitchUserTokenInfo(twitchTokenInfo)) {
     return;
   }
 
@@ -2015,7 +2212,7 @@ async function createEventSubSubscription(type, broadcasterUserId, login) {
 }
 
 function getEventSubAccessToken() {
-  if (!twitchTokenInfo?.user_id || !twitchToken || Date.now() >= twitchTokenExpiresAt - 60_000) {
+  if (!hasTwitchUserTokenInfo(twitchTokenInfo) || !twitchToken || Date.now() >= twitchTokenExpiresAt - 60_000) {
     stopEventSub('EventSub user access token expired. Polling remains active.');
     throw new Error('EventSub requires a valid Twitch user access token.');
   }
